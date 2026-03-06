@@ -1,0 +1,42 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "D:\\downloads\\avalanche-payroll-protocol-c49 (1)\\contracts\\contracts\\AvaPayBatchPayroll.sol": {
+      "lastModificationDate": 1772702741601,
+      "contentHash": "f70f29b66e06f9183652570dd4a52808",
+      "sourceName": "contracts/AvaPayBatchPayroll.sol",
+      "solcConfig": {
+        "version": "0.8.24",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.24"
+      ],
+      "artifacts": [
+        "AvaPayBatchPayroll",
+        "IERC20"
+      ]
+    }
+  }
+}
