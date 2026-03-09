@@ -10,7 +10,7 @@ import {
   setCompanyPayrollContract,
 } from "../domain";
 import type { EmployerStateResponse } from "@shared/api";
-import { FUJI_USDC_ADDRESS } from "@shared/constants";
+import { FUJI_USDC_ADDRESS } from "../../shared/constants";
 
 export const handleGetEmployerState: RequestHandler = async (req, res) => {
   const auth = (req as any).auth as { userId: string } | undefined;

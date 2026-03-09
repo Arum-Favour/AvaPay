@@ -1,0 +1,12 @@
+{
+  "name": "shared",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./constants.ts",
+  "types": "./constants.ts",
+  "exports": {
+    ".": "./constants.ts"
+  }
+}
+
+
