@@ -3,8 +3,8 @@
   "buildCommand": "npm run build && npm run build:serverless",
   "outputDirectory": "dist/spa",
   "functions": {
-    "api/*.js": {
-      "runtime": "nodejs@22",
+    "api/**/*.js": {
+      "runtime": "nodejs18.x",
       "includeFiles": "dist/server/**"
     }
   },
