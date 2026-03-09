@@ -28,43 +28,62 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { usePublicClient, useWalletClient, useAccount } from "wagmi";
-import { zeroAddress } from "viem";
+import { usePublicClient, useConnectorClient, useAccount, useDeployContract } from "wagmi";
+import { deployContract as viemDeployContract } from "viem/actions";
 import { avalancheFuji } from "viem/chains";
 import { avapayBatchPayrollAbi, avapayBatchPayrollBytecode } from "@/lib/contracts/avapayBatchPayroll";
 import { toast } from "sonner";
+import { FUJI_USDC_ADDRESS } from "@shared/constants";
 
 export default function Deploy() {
-  const { address: owner } = useAccount();
-  const { data: walletClient } = useWalletClient();
+  const { address: owner, status: connectStatus } = useAccount();
+  const { data: connectorClient } = useConnectorClient();
   const publicClient = usePublicClient();
+  const { mutateAsync: deployContract } = useDeployContract();
 
   const [employeeAddress, setEmployeeAddress] = React.useState("");
   const [amount, setAmount] = React.useState("");
   const [model, setModel] = React.useState("monthly");
-  const [tokenAddress, setTokenAddress] = React.useState<string>(zeroAddress);
   const [isDeploying, setIsDeploying] = React.useState(false);
 
-  const deploy = async () => {
-    if (!walletClient || !owner) {
+  const deploy = React.useCallback(async () => {
+    // Debug: inspect what's blocking the button
+    const debug = {
+      owner: owner ?? null,
+      hasConnectorClient: !!connectorClient,
+      connectStatus,
+      chainId: connectorClient ? Number((connectorClient as { chain?: { id?: number } }).chain?.id) : null,
+    };
+    console.log("[Deploy] debug:", debug);
+
+    if (!owner) {
       toast.error("Connect your wallet first.");
       return;
     }
+
     setIsDeploying(true);
     try {
-      const hash = await walletClient.deployContract({
-        chain: avalancheFuji,
-        account: walletClient.account,
-        // viem's DeployContractParameters may require kzg in some type configurations.
-        // Fuji does not use blob transactions for this MVP deployment.
-        kzg: undefined as any,
-        abi: avapayBatchPayrollAbi,
-        bytecode: avapayBatchPayrollBytecode as `0x${string}`,
-        args: [tokenAddress as `0x${string}`, owner],
-      });
+      let hash: `0x${string}` | undefined;
+      if (connectorClient) {
+        hash = await viemDeployContract(connectorClient as Parameters<typeof viemDeployContract>[0], {
+          abi: avapayBatchPayrollAbi,
+          bytecode: avapayBatchPayrollBytecode as `0x${string}`,
+          args: [FUJI_USDC_ADDRESS as `0x${string}`, owner],
+          chain: avalancheFuji,
+          account: owner as `0x${string}`,
+        } as any);
+      } else {
+        hash = await deployContract({
+          abi: avapayBatchPayrollAbi,
+          bytecode: avapayBatchPayrollBytecode as `0x${string}`,
+          args: [FUJI_USDC_ADDRESS as `0x${string}`, owner],
+          chainId: avalancheFuji.id,
+        });
+      }
+      if (!hash) throw new Error("Deploy returned no hash");
       toast.message("Deployment submitted", { description: hash });
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await publicClient!.waitForTransactionReceipt({ hash });
       const contractAddress = receipt.contractAddress;
       if (!contractAddress) throw new Error("No contract address in receipt");
 
@@ -82,7 +101,7 @@ export default function Deploy() {
     } finally {
       setIsDeploying(false);
     }
-  };
+  }, [owner, deployContract, publicClient, connectorClient]);
 
   return (
     <Layout>
@@ -157,33 +176,10 @@ export default function Deploy() {
 
               <Separator className="bg-white/5" />
 
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-primary text-[10px] font-bold">2</div>
-                  <h3 className="font-bold">Treasury Asset</h3>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="token" className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Token Address (ERC20)</Label>
-                  <Input
-                    id="token"
-                    placeholder="0x... (use 0x000... for native AVAX)"
-                    className="h-12 rounded-xl bg-white/5 border-white/10 focus-visible:ring-primary/50"
-                    value={tokenAddress}
-                    onChange={(e) => setTokenAddress(e.target.value as `0x${string}`)}
-                  />
-                  <p className="text-[10px] text-muted-foreground">
-                    For investor demos, deploy a mock USDC ERC20 on Fuji and paste its address here.
-                  </p>
-                </div>
-              </div>
-
-              <Separator className="bg-white/5" />
-
               {/* Streaming Parameters */}
               <div className="space-y-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-primary text-[10px] font-bold">3</div>
+                  <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-primary text-[10px] font-bold">2</div>
                   <h3 className="font-bold">Streaming Parameters</h3>
                 </div>
                 
@@ -210,7 +206,7 @@ export default function Deploy() {
               <div className="pt-4">
                 <Button
                   onClick={deploy}
-                  disabled={isDeploying || !owner || !walletClient}
+                  disabled={isDeploying || !owner || connectStatus !== "connected"}
                   className="w-full h-14 rounded-2xl bg-primary hover:bg-primary/90 text-lg font-bold shadow-[0_0_20px_-5px_hsl(var(--primary)/0.5)] transition-all hover:scale-[1.01] active:scale-[0.99]"
                 >
                   <Zap className="mr-2 h-5 w-5 fill-current" />
@@ -238,7 +234,7 @@ export default function Deploy() {
                     deployContract(<span className="text-accent">"Payroll_v2"</span>, &#123;<br />
                     &nbsp;&nbsp;recipient: <span className="text-accent">{employeeAddress || "0x..."}</span>,<br />
                     &nbsp;&nbsp;amount: <span className="text-accent">{amount || "0"}</span>,<br />
-                    &nbsp;&nbsp;currency: <span className="text-accent">{tokenAddress === zeroAddress ? '"AVAX"' : '"ERC20"'}</span>,<br />
+                    &nbsp;&nbsp;currency: <span className="text-accent">"USDC"</span>,<br />
                     &nbsp;&nbsp;model: <span className="text-accent">"{model}"</span>,<br />
                     &nbsp;&nbsp;gasToken: <span className="text-accent">"AVAX"</span><br />
                     &#125;);
@@ -273,8 +269,8 @@ export default function Deploy() {
               </div>
               <ul className="space-y-3">
                 {[
-                  "Ensure the recipient address is correct.",
-                  "Funds must be available in company treasury.",
+                  "Vault uses Fuji USDC. Fund it from your wallet.",
+                  "Ensure employee addresses are correct.",
                   "Avalanche C-Chain confirmations are final.",
                   "Smart contracts are fully auditable."
                 ].map((text, i) => (

@@ -38,10 +38,16 @@ import { useAuth } from "@/hooks/use-auth";
 import type { EmployerStateResponse } from "@shared/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { usePublicClient, useWalletClient } from "wagmi";
+import { useAccount, usePublicClient, useWalletClient, useReadContracts } from "wagmi";
 import { avalancheFuji } from "viem/chains";
-import { zeroAddress } from "viem";
+import { formatUnits } from "viem";
 import { avapayBatchPayrollAbi } from "@/lib/contracts/avapayBatchPayroll";
+import { FUJI_USDC_ADDRESS } from "@shared/constants";
+
+const erc20Abi = [
+  { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "balance", type: "uint256" }] },
+  { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
+] as const;
 
 function formatUsdc(usdc6: number) {
   return (usdc6 / 1_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -49,9 +55,24 @@ function formatUsdc(usdc6: number) {
 
 export default function Employer() {
   const { user } = useAuth();
+  const { address: employerAddress } = useAccount();
   const qc = useQueryClient();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
+
+  const treasuryUsdc = useReadContracts({
+    contracts: employerAddress
+      ? ([
+          { address: FUJI_USDC_ADDRESS as `0x${string}`, abi: erc20Abi, functionName: "balanceOf", args: [employerAddress as `0x${string}`], chainId: avalancheFuji.id },
+          { address: FUJI_USDC_ADDRESS as `0x${string}`, abi: erc20Abi, functionName: "decimals", chainId: avalancheFuji.id },
+        ] as const)
+      : ([] as const),
+    query: { enabled: !!employerAddress },
+  });
+  const treasuryBalanceUsdc6 =
+    treasuryUsdc.data?.[0]?.result != null && treasuryUsdc.data?.[1]?.result != null
+      ? Number(formatUnits(treasuryUsdc.data[0].result as bigint, treasuryUsdc.data[1].result as number)) * 1_000_000
+      : 0;
 
   const employerState = useQuery({
     queryKey: ["employer-state"],
@@ -126,14 +147,6 @@ export default function Employer() {
       const draft = [...state.payruns].find((p) => p.status === "draft");
       if (!draft) throw new Error("No draft payrun found. Create one first.");
 
-      const token = await publicClient.readContract({
-        authorizationList: [] as any,
-        address: state.company.payrollContractAddress as `0x${string}`,
-        abi: avapayBatchPayrollAbi,
-        functionName: "token",
-      });
-      if (token === zeroAddress) throw new Error("Native AVAX vault is not supported in this MVP UI yet. Deploy with an ERC20 token.");
-
       const recipients = state.employees.filter((e) => e.status === "active").map((e) => e.wallet as `0x${string}`);
       const amounts = state.employees.filter((e) => e.status === "active").map((e) => BigInt(e.monthlySalaryUsdc6));
       if (recipients.length === 0) throw new Error("No active employees to pay.");
@@ -170,6 +183,10 @@ export default function Employer() {
   const contractAddress = employerState.data?.company?.payrollContractAddress;
   const employees = employerState.data?.employees ?? [];
   const totalMonthly = employees.filter((e) => e.status === "active").reduce((acc, e) => acc + e.monthlySalaryUsdc6, 0);
+  const treasuryDisplay =
+    treasuryUsdc.isLoading
+      ? "Loading…"
+      : `${formatUsdc(Math.round(treasuryBalanceUsdc6))} USDC`;
 
   return (
     <Layout>
@@ -245,10 +262,10 @@ export default function Employer() {
               <div className="space-y-1">
                 <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">Treasury Balance</h3>
                 <div className="flex items-end gap-3">
-                  <p className="text-4xl font-extrabold">{formatUsdc(totalMonthly)} USDC</p>
+                  <p className="text-4xl font-extrabold">{treasuryDisplay}</p>
                   <div className="flex items-center gap-1 text-emerald-500 text-sm font-bold pb-1">
                     <TrendingUp className="h-4 w-4" />
-                    Active payroll
+                    Your wallet
                   </div>
                 </div>
               </div>

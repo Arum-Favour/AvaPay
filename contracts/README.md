@@ -8,7 +8,8 @@ Create a `.env` in the repo root (or export env vars) with:
 
 - `FUJI_RPC_URL`
 - `DEPLOYER_PRIVATE_KEY` (Fuji-funded)
-- Optional: `PAYROLL_TOKEN_ADDRESS` (ERC20). If omitted, deploys native AVAX payout vault.
+
+Vault is deployed with Fuji USDC as the payroll asset.
 
 ### Commands
 

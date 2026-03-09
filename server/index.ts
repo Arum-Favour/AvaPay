@@ -5,6 +5,7 @@ import cookieParser from "cookie-parser";
 import { handleDemo } from "./routes/demo";
 import { handleAuthLogout, handleAuthMe, handleAuthNonce, handleAuthVerify, requireAuth, requireRole } from "./auth";
 import { handleCreateEmployee, handleCreatePayrunDraft, handleGetEmployerState, handleSetPayrollContract, handleSubmitPayrunTx } from "./routes/payroll";
+import { handleGetEmployeePortal } from "./routes/employee";
 
 export function createServer() {
   const app = express();
@@ -41,6 +42,9 @@ export function createServer() {
   app.post("/api/employer/payroll-contract", requireAuth, requireRole(["employer", "admin"]), handleSetPayrollContract);
   app.post("/api/employer/payruns/draft", requireAuth, requireRole(["employer", "admin"]), handleCreatePayrunDraft);
   app.post("/api/employer/payruns/submit", requireAuth, requireRole(["employer", "admin"]), handleSubmitPayrunTx);
+
+  // Employee portal API
+  app.get("/api/employee/portal", requireAuth, requireRole(["employee", "admin"]), handleGetEmployeePortal);
 
   return app;
 }

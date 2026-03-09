@@ -55,3 +55,18 @@ export interface CreateEmployeeRequest {
   monthlySalaryUsdc6: number;
 }
 
+export interface EmployeeHistoryItem {
+  id: string;
+  amountUsdc6: number;
+  status: "queued" | "paid" | "failed";
+  createdAt: number;
+  txHash: string | null;
+}
+
+export interface EmployeePortalResponse {
+  employee: ApiEmployee | null;
+  lifetimeEarningsUsdc6: number;
+  withdrawableUsdc6: number;
+  history: EmployeeHistoryItem[];
+}
+

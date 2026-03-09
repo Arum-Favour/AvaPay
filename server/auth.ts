@@ -77,9 +77,9 @@ export const handleAuthVerify: RequestHandler = async (req, res) => {
   }
 
   const address = siwe.address.toLowerCase();
-  const user = upsertUser({ address, email: email ?? null, role: role as UserRole });
+  const user = await upsertUser({ address, email: email ?? null, role: role as UserRole });
   if (user.role === "employer") {
-    ensureCompanyForOwner({ ownerUserId: user.id, name: companyName ?? "AvaPay Demo Company" });
+    await ensureCompanyForOwner({ ownerUserId: user.id, name: companyName ?? "AvaPay Demo Company" });
   }
 
   const now = Math.floor(Date.now() / 1000);

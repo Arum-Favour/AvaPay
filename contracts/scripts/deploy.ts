@@ -1,14 +1,15 @@
 import { ethers } from "hardhat";
 
+const FUJI_USDC_ADDRESS = "0x5425890298aed601595a70AB815c96711a31Bc65";
+
 async function main() {
-  const token = process.env.PAYROLL_TOKEN_ADDRESS ?? ethers.ZeroAddress; // ZeroAddress => native AVAX payouts
   const [deployer] = await ethers.getSigners();
 
   console.log("Deployer:", deployer.address);
-  console.log("Token:", token);
+  console.log("Token (Fuji USDC):", FUJI_USDC_ADDRESS);
 
   const Factory = await ethers.getContractFactory("AvaPayBatchPayroll");
-  const contract = await Factory.deploy(token, deployer.address);
+  const contract = await Factory.deploy(FUJI_USDC_ADDRESS, deployer.address);
   await contract.waitForDeployment();
 
   const addr = await contract.getAddress();

@@ -13,7 +13,34 @@ import { cn } from "@/lib/utils";
 
 import { useAuth } from "@/hooks/use-auth";
 import { useNavigate } from "react-router-dom";
-import { useAccount } from 'wagmi';
+import { useAccount, useBalance, useReadContracts } from "wagmi";
+import { avalancheFuji } from "wagmi/chains";
+import { formatUnits } from "viem";
+import { FUJI_USDC_ADDRESS } from "@shared/constants";
+
+const erc20Abi = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "balance", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "symbol",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
+  },
+] as const;
 
 export function WalletConnect() {
   const { user, signOut } = useAuth();
@@ -29,6 +56,33 @@ export function WalletConnect() {
   const shortAddress = displayAddress 
     ? `${displayAddress.slice(0, 6)}...${displayAddress.slice(-4)}` 
     : "";
+
+  const avaxBalance = useBalance({
+    address: displayAddress as `0x${string}` | undefined,
+    chainId: avalancheFuji.id,
+    query: { enabled: !!displayAddress && isConnected },
+  });
+
+  const usdcReads = useReadContracts({
+    contracts: displayAddress
+      ? ([
+          {
+            address: FUJI_USDC_ADDRESS as `0x${string}`,
+            abi: erc20Abi,
+            functionName: "balanceOf",
+            args: [displayAddress as `0x${string}`],
+            chainId: avalancheFuji.id,
+          },
+          { address: FUJI_USDC_ADDRESS as `0x${string}`, abi: erc20Abi, functionName: "decimals", chainId: avalancheFuji.id },
+          { address: FUJI_USDC_ADDRESS as `0x${string}`, abi: erc20Abi, functionName: "symbol", chainId: avalancheFuji.id },
+        ] as const)
+      : ([] as const),
+    query: { enabled: !!displayAddress && isConnected },
+  });
+
+  const erc20BalanceValue = usdcReads.data?.[0]?.result as bigint | undefined;
+  const erc20Decimals = usdcReads.data?.[1]?.result as number | undefined;
+  const erc20Symbol = usdcReads.data?.[2]?.result as string | undefined;
 
   if (!user || !isConnected) {
     return (
@@ -66,13 +120,25 @@ export function WalletConnect() {
         <DropdownMenuSeparator className="bg-white/5" />
         <DropdownMenuItem className="focus:bg-white/5 cursor-pointer py-3">
           <div className="flex flex-col">
-            <span className="text-sm font-semibold">1,245.50 USDC</span>
-            <span className="text-[10px] text-muted-foreground">Available Balance</span>
+            <span className="text-sm font-semibold">
+              {usdcReads.isLoading
+                ? "Loading…"
+                : erc20BalanceValue != null && erc20Decimals != null
+                  ? `${Number(formatUnits(erc20BalanceValue, erc20Decimals)).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${erc20Symbol ?? "USDC"}`
+                  : "—"}
+            </span>
+            <span className="text-[10px] text-muted-foreground">Treasury (Fuji USDC)</span>
           </div>
         </DropdownMenuItem>
         <DropdownMenuItem className="focus:bg-white/5 cursor-pointer py-3">
           <div className="flex flex-col">
-            <span className="text-sm font-semibold">42.15 AVAX</span>
+            <span className="text-sm font-semibold">
+              {avaxBalance.isLoading
+                ? "Loading…"
+                : avaxBalance.data
+                  ? `${Number(formatUnits(avaxBalance.data.value, avaxBalance.data.decimals)).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${avaxBalance.data.symbol}`
+                  : "—"}
+            </span>
             <span className="text-[10px] text-muted-foreground">Gas Balance</span>
           </div>
         </DropdownMenuItem>
