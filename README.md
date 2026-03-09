@@ -176,3 +176,7 @@ This starts both the **Vite React SPA client** and the **Express API server** on
 The main vault contract is `contracts/contracts/AvaPayBatchPayroll.sol`.  
 For low-level Hardhat usage and CLI deployment, see `contracts/README.md` (optional if you use the UI deploy).
 
+### Deployment (Render & Vercel)
+
+See **[DEPLOYMENT.md](./DEPLOYMENT.md)** for step-by-step instructions to deploy on Render (recommended) or Vercel using free tiers.
+
