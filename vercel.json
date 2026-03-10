@@ -1,9 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run build && npm run build:serverless",
-  "outputDirectory": "dist/spa",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/catchall" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
-  ]
+    { "source": "/(.*)", "destination": "/api/index" }
+  ],
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "dist/spa/**"
+    }
+  }
 }
