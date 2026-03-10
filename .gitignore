@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+api/serverless.mjs
+api/serverless.mjs.map
 *.local
 
 # Editor directories and files

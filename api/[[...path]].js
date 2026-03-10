@@ -1,5 +1,5 @@
 /**
  * Vercel serverless catch-all for /api/* routes.
- * Serves the Express API; static SPA is served by Vercel from dist/spa.
+ * Build outputs serverless-handler.mjs into api/ so Vercel deploys it with the function.
  */
-export { default } from "../dist/server/serverless.mjs";
+export { default } from "./serverless.mjs";

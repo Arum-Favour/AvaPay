@@ -7,10 +7,10 @@ export default defineConfig({
     lib: {
       entry: path.resolve(__dirname, "server/serverless.ts"),
       name: "serverless",
-      fileName: "serverless",
+      fileName: "serverless-handler",
       formats: ["es"],
     },
-    outDir: "dist/server",
+    outDir: "api",
     target: "node22",
     ssr: true,
     rollupOptions: {
