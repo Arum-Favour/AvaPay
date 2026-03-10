@@ -1,4 +1,5 @@
-# .env is better suited for public variables, ie, variables that should not commited
+const fs = require('fs');
+const content = `# .env is better suited for public variables, ie, variables that should not commited
 # For secret variables is better to use DevServerControl tool with set_env_variable: ["KEY", "SECRET"]
 
 # https://www.builder.io/c/docs/using-your-api-key
@@ -20,4 +21,7 @@ MONGODB_URI=mongodb+srv://Kingson:KavMn5YvwC6STQmT@cluster0.al8mjom.mongodb.net/
 # Contracts (for deploy scripts, optional)
 FUJI_RPC_URL=https://api.avax-test.network/ext/bc/C/rpc
 DEPLOYER_PRIVATE_KEY=773df708464e812596cffb24c49438204292ff56bfd6b1be66c1694de6e15f8e
+`;
+fs.writeFileSync('.env', content);
+console.log('Done!');
 

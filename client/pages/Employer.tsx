@@ -38,7 +38,7 @@ import { useAuth } from "@/hooks/use-auth";
 import type { EmployerStateResponse } from "@shared/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useAccount, usePublicClient, useWalletClient, useReadContracts } from "wagmi";
+import { useAccount, usePublicClient, useConnectorClient, useReadContracts, useReadContract, useWalletClient } from "wagmi";
 import { avalancheFuji } from "viem/chains";
 import { formatUnits } from "viem";
 import { avapayBatchPayrollAbi } from "@/lib/contracts/avapayBatchPayroll";
@@ -47,6 +47,8 @@ import { FUJI_USDC_ADDRESS } from "@shared/constants";
 const erc20Abi = [
   { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "balance", type: "uint256" }] },
   { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
+  { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ name: "", type: "bool" }] },
+  { type: "function", name: "allowance", stateMutability: "view", inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
 ] as const;
 
 function formatUsdc(usdc6: number) {
@@ -55,9 +57,10 @@ function formatUsdc(usdc6: number) {
 
 export default function Employer() {
   const { user } = useAuth();
-  const { address: employerAddress } = useAccount();
+  const { address: employerAddress, status: accountStatus } = useAccount();
   const qc = useQueryClient();
   const publicClient = usePublicClient();
+  const { data: connectorClient } = useConnectorClient();
   const { data: walletClient } = useWalletClient();
 
   const treasuryUsdc = useReadContracts({
@@ -83,6 +86,16 @@ export default function Employer() {
     },
     enabled: !!user,
   });
+
+  const contractAddress = employerState.data?.company?.payrollContractAddress ?? null;
+  const { data: vaultBalanceWei } = useReadContract({
+    address: contractAddress as `0x${string}` | undefined,
+    abi: avapayBatchPayrollAbi,
+    functionName: "balance",
+    chainId: avalancheFuji.id,
+    query: { enabled: !!contractAddress },
+  });
+  const vaultBalanceUsdc6 = vaultBalanceWei != null ? Number(vaultBalanceWei) : 0;
 
   const createEmployee = useMutation({
     mutationFn: async (input: { name: string; title?: string; wallet: string; monthlySalaryUsdc: string }) => {
@@ -115,6 +128,7 @@ export default function Employer() {
   const [newTitle, setNewTitle] = React.useState("");
   const [newWallet, setNewWallet] = React.useState("");
   const [newSalary, setNewSalary] = React.useState("");
+  const [depositAmount, setDepositAmount] = React.useState("");
 
   const createPayrunDraft = useMutation({
     mutationFn: async () => {
@@ -137,12 +151,67 @@ export default function Employer() {
     onError: (e: any) => toast.error("Create payrun failed", { description: e?.message ?? String(e) }),
   });
 
+  // Check USDC allowance for the vault
+  const usdcAllowance = useReadContract({
+    address: FUJI_USDC_ADDRESS as `0x${string}`,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: employerAddress && contractAddress ? [employerAddress as `0x${string}`, contractAddress as `0x${string}`] : undefined,
+    query: { enabled: !!employerAddress && !!contractAddress },
+  });
+
+  const approveUsdc = useMutation({
+    mutationFn: async () => {
+      if (!walletClient || !publicClient || !contractAddress) throw new Error("Wallet or contract not ready");
+      const amountUsdc6 = Math.round(Number(depositAmount) * 1_000_000);
+      const hash = await walletClient.writeContract({
+        chain: avalancheFuji,
+        account: walletClient.account,
+        address: FUJI_USDC_ADDRESS,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [contractAddress as `0x${string}`, BigInt(amountUsdc6)],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+      return hash;
+    },
+    onSuccess: (hash) => {
+      toast.success("USDC approved", { description: hash });
+      usdcAllowance.refetch();
+    },
+    onError: (e: any) => toast.error("Approve failed", { description: e?.message ?? String(e) }),
+  });
+
+  const depositToVault = useMutation({
+    mutationFn: async () => {
+      if (!walletClient || !publicClient || !contractAddress) throw new Error("Wallet or contract not ready");
+      const amountUsdc6 = Math.round(Number(depositAmount) * 1_000_000);
+      const hash = await walletClient.writeContract({
+        chain: avalancheFuji,
+        account: walletClient.account,
+        address: contractAddress as `0x${string}`,
+        abi: avapayBatchPayrollAbi,
+        functionName: "depositERC20",
+        args: [BigInt(amountUsdc6)],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+      return hash;
+    },
+    onSuccess: (hash) => {
+      toast.success("Deposited to vault", { description: hash });
+      qc.invalidateQueries({ queryKey: ["employer-state"] });
+      treasuryUsdc.refetch();
+    },
+    onError: (e: any) => toast.error("Deposit failed", { description: e?.message ?? String(e) }),
+  });
+
   const executeLatestDraft = useMutation({
     mutationFn: async () => {
       const state = employerState.data;
       if (!state) throw new Error("Employer state not loaded");
       if (!state.company.payrollContractAddress) throw new Error("No payroll contract set. Deploy one in Smart Contracts.");
-      if (!walletClient) throw new Error("Connect wallet");
+      if (!walletClient || !publicClient) throw new Error("Connect wallet");
+      if (accountStatus !== "connected") throw new Error("Connect wallet");
 
       const draft = [...state.payruns].find((p) => p.status === "draft");
       if (!draft) throw new Error("No draft payrun found. Create one first.");
@@ -151,7 +220,19 @@ export default function Employer() {
       const amounts = state.employees.filter((e) => e.status === "active").map((e) => BigInt(e.monthlySalaryUsdc6));
       if (recipients.length === 0) throw new Error("No active employees to pay.");
 
-      const hash = await walletClient.writeContract({
+      const vaultBal = await publicClient.readContract({
+        address: state.company.payrollContractAddress as `0x${string}`,
+        abi: avapayBatchPayrollAbi,
+        functionName: "balance",
+      } as any);
+      const required = draft.totalAmountUsdc6;
+      if ((vaultBal as bigint) < BigInt(required)) {
+        throw new Error(
+          `Vault has insufficient USDC. Deposit at least ${formatUsdc(required)} USDC into the vault first (approve + depositERC20 on the contract). Current vault: ${formatUsdc(Number(vaultBal))} USDC.`
+        );
+      }
+
+      const hash = await (walletClient as any).writeContract({
         chain: avalancheFuji,
         account: walletClient.account,
         address: state.company.payrollContractAddress as `0x${string}`,
@@ -180,9 +261,12 @@ export default function Employer() {
   if (!user) return null;
 
   const companyName = employerState.data?.company?.name || "Your Company";
-  const contractAddress = employerState.data?.company?.payrollContractAddress;
   const employees = employerState.data?.employees ?? [];
   const totalMonthly = employees.filter((e) => e.status === "active").reduce((acc, e) => acc + e.monthlySalaryUsdc6, 0);
+  const draftPayrun = employerState.data?.payruns?.find((p) => p.status === "draft");
+  const draftTotalUsdc6 = draftPayrun?.totalAmountUsdc6 ?? 0;
+  const vaultHasEnough = vaultBalanceUsdc6 >= draftTotalUsdc6;
+
   const treasuryDisplay =
     treasuryUsdc.isLoading
       ? "Loading…"
@@ -246,13 +330,59 @@ export default function Employer() {
             <Button
               className="rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
               onClick={() => executeLatestDraft.mutate()}
-              disabled={executeLatestDraft.isPending}
+              disabled={executeLatestDraft.isPending || (!!draftPayrun && !vaultHasEnough)}
+              title={draftPayrun && !vaultHasEnough ? `Fund vault with at least ${formatUsdc(draftTotalUsdc6)} USDC first (depositERC20)` : undefined}
             >
               <Zap className="mr-2 h-4 w-4" />
-              {executeLatestDraft.isPending ? "Executing..." : "Execute Latest Draft On-chain"}
+              {executeLatestDraft.isPending ? "Executing..." : draftPayrun && !vaultHasEnough ? "Fund vault first" : "Execute Latest Draft On-chain"}
             </Button>
           </div>
         </div>
+
+        {/* Fund Vault Section */}
+        {contractAddress && (
+          <div className="glass-card rounded-2xl p-6 border border-primary/20">
+            <div className="flex flex-col lg:flex-row gap-4 lg:items-end">
+              <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <Input
+                    placeholder="Amount to fund (USDC)"
+                    type="number"
+                    className="rounded-xl bg-white/5 border-white/10"
+                    value={depositAmount}
+                    onChange={(e) => setDepositAmount(e.target.value)}
+                  />
+                </div>
+                <div className="text-xs text-muted-foreground flex items-center">
+                  Treasury: {treasuryDisplay}
+                </div>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Button
+                  variant="outline"
+                  className="rounded-full border-primary/30 text-primary hover:bg-primary/10 hover:border-primary/50"
+                  onClick={() => approveUsdc.mutate()}
+                  disabled={approveUsdc.isPending || !depositAmount || !contractAddress}
+                >
+                  {approveUsdc.isPending ? "Approving..." : `Approve USDC`}
+                </Button>
+                <Button
+                  className="rounded-full bg-emerald-500 hover:bg-emerald-600 shadow-lg shadow-emerald-500/20"
+                  onClick={() => depositToVault.mutate()}
+                  disabled={depositToVault.isPending || !depositAmount || !contractAddress}
+                >
+                  <Wallet className="mr-2 h-4 w-4" />
+                  {depositToVault.isPending ? "Depositing..." : "Deposit to Vault"}
+                </Button>
+              </div>
+            </div>
+            {usdcAllowance.data != null && Number(usdcAllowance.data) > 0 && (
+              <p className="text-xs text-emerald-500 mt-3 flex items-center gap-1">
+                ✓ USDC allowance: {formatUsdc(Number(usdcAllowance.data))} USDC
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Top Cards Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -276,18 +406,26 @@ export default function Employer() {
             
             <div className="grid grid-cols-3 gap-4 pt-6 border-t border-white/5">
               <div className="space-y-1">
-                <span className="text-[10px] font-bold text-muted-foreground uppercase">Estimated Gas</span>
-                <p className="text-sm font-bold">~0.15 AVAX</p>
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Vault balance</span>
+                <p className="text-sm font-bold">{contractAddress ? `${formatUsdc(Math.round(vaultBalanceUsdc6))} USDC` : "—"}</p>
               </div>
               <div className="space-y-1">
-                <span className="text-[10px] font-bold text-muted-foreground uppercase">Next Batch</span>
-                <p className="text-sm font-bold">Create Payrun</p>
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Required for payrun</span>
+                <p className={cn("text-sm font-bold", draftTotalUsdc6 > 0 && vaultBalanceUsdc6 < draftTotalUsdc6 && "text-amber-500")}>
+                  {draftTotalUsdc6 > 0 ? `${formatUsdc(draftTotalUsdc6)} USDC` : "—"}
+                </p>
               </div>
               <div className="space-y-1 text-right">
-                <span className="text-[10px] font-bold text-muted-foreground uppercase">Multi-Sig Status</span>
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Status</span>
                 <div className="flex items-center justify-end gap-1.5">
-                  <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  <span className="text-sm font-bold">1 of 1 (MVP)</span>
+                  {draftPayrun && !vaultHasEnough ? (
+                    <span className="text-sm font-bold text-amber-500">Fund vault first</span>
+                  ) : (
+                    <>
+                      <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      <span className="text-sm font-bold">Ready</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

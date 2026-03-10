@@ -36,6 +36,7 @@ export async function getCollections(): Promise<Collections> {
       employees.createIndex({ companyId: 1, wallet: 1 }, { unique: true }),
       payruns.createIndex({ companyId: 1, createdAt: -1 }),
       payrunItems.createIndex({ payrunId: 1 }),
+      payrunItems.createIndex({ employeeId: 1 }),
     ]);
 
     return { users, companies, employees, payruns, payrunItems };

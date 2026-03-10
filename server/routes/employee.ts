@@ -19,7 +19,7 @@ export const handleGetEmployeePortal: RequestHandler = async (req, res) => {
     monthlySalaryUsdCents: number;
     status: string;
     createdAt?: number;
-  }>({ wallet: address });
+  }>({ wallet: address.toLowerCase() });
 
   if (!employeeRow) {
     const empty: EmployeePortalResponse = {
