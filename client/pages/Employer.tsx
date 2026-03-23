@@ -3,6 +3,7 @@ import Layout from "@/components/Layout";
 import { 
   Building2, 
   Download, 
+  FileUp,
   Plus, 
   Wallet, 
   MoreVertical, 
@@ -13,6 +14,8 @@ import {
   Search,
   Users,
   Calendar,
+  Pencil,
+  Trash2,
   Zap,
   ChevronDown
 } from "lucide-react";
@@ -89,6 +92,32 @@ function formatUsdc6Bigint(usdc6: bigint): string {
   const frac = usdc6 % 1_000_000n; // 0..999999
   const twoDec = frac / 10_000n; // 2 decimals
   return `${intPart.toString()}.${twoDec.toString().padStart(2, "0")}`;
+}
+
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === "," && !inQuotes) {
+      out.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current.trim());
+  return out;
 }
 
 export default function Employer() {
@@ -169,6 +198,80 @@ export default function Employer() {
       qc.invalidateQueries({ queryKey: ["employer-state"] });
     },
     onError: (e: any) => toast.error("Add employee failed", { description: e?.message ?? String(e) }),
+  });
+
+  const csvInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const importEmployeesCsv = useMutation({
+    mutationFn: async (rows: Array<{ name: string; role: string; wallet: string; monthlySalaryUsdc6: number }>) => {
+      const res = await fetch("/api/employer/employees/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ rows }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? "Failed to import CSV");
+      }
+      return res.json();
+    },
+    onSuccess: (out: any) => {
+      toast.success(`Imported ${out?.imported ?? 0} employee(s)`);
+      qc.invalidateQueries({ queryKey: ["employer-state"] });
+    },
+    onError: (e: any) => toast.error("CSV import failed", { description: e?.message ?? String(e) }),
+  });
+
+  const updateEmployeeMutation = useMutation({
+    mutationFn: async (input: {
+      employeeId: string;
+      name: string;
+      role: string;
+      wallet: string;
+      monthlySalaryUsdc6: number;
+    }) => {
+      const res = await fetch(`/api/employer/employees/${input.employeeId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          name: input.name,
+          role: input.role,
+          wallet: input.wallet,
+          monthlySalaryUsdc6: input.monthlySalaryUsdc6,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? "Failed to update employee");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast.success("Employee updated");
+      qc.invalidateQueries({ queryKey: ["employer-state"] });
+    },
+    onError: (e: any) => toast.error("Update failed", { description: e?.message ?? String(e) }),
+  });
+
+  const deleteEmployeeMutation = useMutation({
+    mutationFn: async (employeeId: string) => {
+      const res = await fetch(`/api/employer/employees/${employeeId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? "Failed to delete employee");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast.success("Employee deleted");
+      qc.invalidateQueries({ queryKey: ["employer-state"] });
+    },
+    onError: (e: any) => toast.error("Delete failed", { description: e?.message ?? String(e) }),
   });
 
   const [newName, setNewName] = React.useState("");
@@ -337,6 +440,82 @@ export default function Employer() {
       ? "Loading…"
       : `${formatUsdc(Math.round(treasuryBalanceUsdc6))} USDC`;
 
+  const handleCsvSelected = async (file: File | null) => {
+    if (!file) return;
+    const text = await file.text();
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length < 2) {
+      toast.error("CSV must include a header and at least one row");
+      return;
+    }
+    const header = parseCsvLine(lines[0]).map((h) => h.toLowerCase().replace(/[\s_]/g, "").trim());
+    const required = ["name", "role", "wallet", "monthlysalary"];
+    if (!required.every((r) => header.includes(r))) {
+      toast.error("CSV header must include: name, role, wallet, monthlySalary");
+      return;
+    }
+    const idx = {
+      name: header.indexOf("name"),
+      role: header.indexOf("role"),
+      wallet: header.indexOf("wallet"),
+      salary: header.indexOf("monthlysalary"),
+    };
+    const rows: Array<{ name: string; role: string; wallet: string; monthlySalaryUsdc6: number }> = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCsvLine(lines[i]);
+      const name = (cols[idx.name] ?? "").trim();
+      const role = (cols[idx.role] ?? "").trim();
+      const wallet = (cols[idx.wallet] ?? "").trim().toLowerCase();
+      const salaryRaw = (cols[idx.salary] ?? "").trim();
+      const salary = Math.round(Number(salaryRaw) * 1_000_000);
+      if (!name || !role || !/^0x[a-f0-9]{40}$/i.test(wallet) || !Number.isFinite(salary) || salary < 0) {
+        toast.error(`Invalid CSV row ${i + 1}`);
+        return;
+      }
+      rows.push({ name, role, wallet, monthlySalaryUsdc6: salary });
+    }
+    if (!rows.length) {
+      toast.error("No valid employee rows found");
+      return;
+    }
+    await importEmployeesCsv.mutateAsync(rows);
+  };
+
+  const handleEditEmployee = async (employee: EmployerStateResponse["employees"][number]) => {
+    const name = window.prompt("Employee name", employee.name);
+    if (name == null) return;
+    const role = window.prompt("Employee role/title", employee.title ?? "");
+    if (role == null) return;
+    const wallet = window.prompt("Wallet address", employee.wallet);
+    if (wallet == null) return;
+    const salary = window.prompt(
+      "Monthly salary (USDC)",
+      (employee.monthlySalaryUsdc6 / 1_000_000).toString(),
+    );
+    if (salary == null) return;
+    const monthlySalaryUsdc6 = Math.round(Number(salary) * 1_000_000);
+    if (!name.trim() || !role.trim() || !/^0x[a-f0-9]{40}$/i.test(wallet.trim()) || !Number.isFinite(monthlySalaryUsdc6) || monthlySalaryUsdc6 < 0) {
+      toast.error("Invalid employee details");
+      return;
+    }
+    await updateEmployeeMutation.mutateAsync({
+      employeeId: employee.id,
+      name: name.trim(),
+      role: role.trim(),
+      wallet: wallet.trim().toLowerCase(),
+      monthlySalaryUsdc6,
+    });
+  };
+
+  const handleDeleteEmployee = async (employee: EmployerStateResponse["employees"][number]) => {
+    const ok = window.confirm(`Delete employee ${employee.name}?`);
+    if (!ok) return;
+    await deleteEmployeeMutation.mutateAsync(employee.id);
+  };
+
   return (
     <Layout>
       {employerSetupMissing ? (
@@ -372,6 +551,26 @@ export default function Employer() {
                 <Download className="mr-2 h-4 w-4" />
                 Export CSV
               </Button>
+            <input
+              ref={csvInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0] ?? null;
+                await handleCsvSelected(file);
+                e.currentTarget.value = "";
+              }}
+            />
+            <Button
+              variant="outline"
+              className="rounded-full border-white/10 bg-white/5 hover:bg-white/10"
+              onClick={() => csvInputRef.current?.click()}
+              disabled={importEmployeesCsv.isPending}
+            >
+              <FileUp className="mr-2 h-4 w-4" />
+              {importEmployeesCsv.isPending ? "Importing..." : "Import CSV"}
+            </Button>
               <Button
                 onClick={() => {
                   const wallet = newWallet.trim();
@@ -680,10 +879,20 @@ export default function Employer() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="glass border-white/10">
-                          <DropdownMenuItem className="focus:bg-white/5 cursor-pointer">View Details</DropdownMenuItem>
-                          <DropdownMenuItem className="focus:bg-white/5 cursor-pointer">Edit Salary</DropdownMenuItem>
-                          <DropdownMenuItem className="focus:bg-white/5 cursor-pointer">History</DropdownMenuItem>
-                          <DropdownMenuItem className="text-destructive focus:bg-destructive/10 cursor-pointer">Pause Stream</DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="focus:bg-white/5 cursor-pointer"
+                            onClick={() => handleEditEmployee(employee)}
+                          >
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Edit details
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive focus:bg-destructive/10 cursor-pointer"
+                            onClick={() => handleDeleteEmployee(employee)}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete employee
+                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>

@@ -303,6 +303,75 @@ export async function createEmployee(params: {
   };
 }
 
+export async function updateEmployee(params: {
+  companyId: string;
+  employeeId: string;
+  name?: string;
+  title?: string | null;
+  wallet?: string;
+  monthlySalaryUsdCents?: number;
+  status?: "active" | "paused";
+}): Promise<DbEmployee | null> {
+  const { employees } = await getCollections();
+  const updateDoc: Record<string, unknown> = {};
+  if (typeof params.name === "string") updateDoc.name = params.name;
+  if (params.title !== undefined) updateDoc.title = params.title;
+  if (typeof params.wallet === "string") updateDoc.wallet = params.wallet.toLowerCase();
+  if (typeof params.monthlySalaryUsdCents === "number") updateDoc.monthlySalaryUsdCents = params.monthlySalaryUsdCents;
+  if (params.status) updateDoc.status = params.status;
+  if (Object.keys(updateDoc).length === 0) {
+    const existing = await employees.findOne<{
+      id: string;
+      companyId: string;
+      name: string;
+      title?: string | null;
+      wallet: string;
+      monthlySalaryUsdCents: number;
+      status: string;
+      createdAt?: number;
+    }>({ id: params.employeeId, companyId: params.companyId });
+    if (!existing) return null;
+    return {
+      id: existing.id,
+      companyId: existing.companyId,
+      name: existing.name,
+      title: existing.title ?? null,
+      wallet: existing.wallet,
+      monthlySalaryUsdCents: existing.monthlySalaryUsdCents,
+      status: existing.status === "paused" ? "paused" : "active",
+      createdAt: existing.createdAt ?? 0,
+    };
+  }
+  await employees.updateOne({ id: params.employeeId, companyId: params.companyId }, { $set: updateDoc });
+  const row = await employees.findOne<{
+    id: string;
+    companyId: string;
+    name: string;
+    title?: string | null;
+    wallet: string;
+    monthlySalaryUsdCents: number;
+    status: string;
+    createdAt?: number;
+  }>({ id: params.employeeId, companyId: params.companyId });
+  if (!row) return null;
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    name: row.name,
+    title: row.title ?? null,
+    wallet: row.wallet,
+    monthlySalaryUsdCents: row.monthlySalaryUsdCents,
+    status: row.status === "paused" ? "paused" : "active",
+    createdAt: row.createdAt ?? 0,
+  };
+}
+
+export async function deleteEmployee(params: { companyId: string; employeeId: string }): Promise<boolean> {
+  const { employees } = await getCollections();
+  const result = await employees.deleteOne({ id: params.employeeId, companyId: params.companyId });
+  return result.deletedCount > 0;
+}
+
 export async function createPayrunDraft(params: {
   companyId: string;
   tokenAddress: string;

@@ -3,11 +3,13 @@ import { z } from "zod";
 import {
   createEmployee,
   createPayrunDraft,
+  deleteEmployee,
   getCompanyByOwner,
   listEmployees,
   listPayruns,
   submitPayrunTx,
   setCompanyPayrollContract,
+  updateEmployee,
 } from "../domain";
 import type { EmployerStateResponse } from "../../shared/api";
 import { EMPLOYER_ERROR_COMPANY_NOT_SETUP } from "../../shared/api";
@@ -60,6 +62,27 @@ const createEmployeeSchema = z.object({
   monthlySalaryUsdc6: z.number().int().nonnegative(),
 });
 
+const importEmployeesSchema = z.object({
+  rows: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        role: z.string().min(1),
+        wallet: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+        monthlySalaryUsdc6: z.number().int().nonnegative(),
+      }),
+    )
+    .min(1),
+});
+
+const updateEmployeeSchema = z.object({
+  name: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  wallet: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+  monthlySalaryUsdc6: z.number().int().nonnegative().optional(),
+  status: z.enum(["active", "paused"]).optional(),
+});
+
 export const handleCreateEmployee: RequestHandler = async (req, res) => {
   const auth = (req as any).auth as { userId: string } | undefined;
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
@@ -93,6 +116,88 @@ export const handleCreateEmployee: RequestHandler = async (req, res) => {
       createdAt: employee.createdAt,
     },
   });
+};
+
+export const handleImportEmployeesCsv: RequestHandler = async (req, res) => {
+  const auth = (req as any).auth as { userId: string } | undefined;
+  if (!auth) return res.status(401).json({ error: "Unauthorized" });
+  const company = await getCompanyByOwner(auth.userId);
+  if (!company)
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
+
+  const parsed = importEmployeesSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+
+  const out = [];
+  for (const row of parsed.data.rows) {
+    const employee = await createEmployee({
+      companyId: company.id,
+      name: row.name,
+      title: row.role,
+      wallet: row.wallet.toLowerCase(),
+      monthlySalaryUsdCents: row.monthlySalaryUsdc6,
+    });
+    out.push(employee);
+  }
+  return res.json({ ok: true, imported: out.length });
+};
+
+export const handleUpdateEmployee: RequestHandler = async (req, res) => {
+  const auth = (req as any).auth as { userId: string } | undefined;
+  if (!auth) return res.status(401).json({ error: "Unauthorized" });
+  const company = await getCompanyByOwner(auth.userId);
+  if (!company)
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
+
+  const employeeId = String(req.params.employeeId ?? "");
+  if (!employeeId) return res.status(400).json({ error: "employeeId is required" });
+  const parsed = updateEmployeeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+
+  const updated = await updateEmployee({
+    companyId: company.id,
+    employeeId,
+    name: parsed.data.name,
+    title: parsed.data.role,
+    wallet: parsed.data.wallet?.toLowerCase(),
+    monthlySalaryUsdCents: parsed.data.monthlySalaryUsdc6,
+    status: parsed.data.status,
+  });
+  if (!updated) return res.status(404).json({ error: "Employee not found" });
+  return res.json({
+    employee: {
+      id: updated.id,
+      companyId: updated.companyId,
+      name: updated.name,
+      title: updated.title,
+      wallet: updated.wallet,
+      monthlySalaryUsdc6: updated.monthlySalaryUsdCents,
+      status: updated.status,
+      createdAt: updated.createdAt,
+    },
+  });
+};
+
+export const handleDeleteEmployee: RequestHandler = async (req, res) => {
+  const auth = (req as any).auth as { userId: string } | undefined;
+  if (!auth) return res.status(401).json({ error: "Unauthorized" });
+  const company = await getCompanyByOwner(auth.userId);
+  if (!company)
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
+  const employeeId = String(req.params.employeeId ?? "");
+  if (!employeeId) return res.status(400).json({ error: "employeeId is required" });
+  const deleted = await deleteEmployee({ companyId: company.id, employeeId });
+  if (!deleted) return res.status(404).json({ error: "Employee not found" });
+  return res.json({ ok: true });
 };
 
 const setContractSchema = z.object({

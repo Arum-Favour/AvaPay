@@ -4,7 +4,16 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { handleDemo } from "./routes/demo";
 import { handleAuthLogout, handleAuthMe, handleAuthNonce, handleAuthVerify, requireAuth, requireRole } from "./auth";
-import { handleCreateEmployee, handleCreatePayrunDraft, handleGetEmployerState, handleSetPayrollContract, handleSubmitPayrunTx } from "./routes/payroll";
+import {
+  handleCreateEmployee,
+  handleCreatePayrunDraft,
+  handleDeleteEmployee,
+  handleGetEmployerState,
+  handleImportEmployeesCsv,
+  handleSetPayrollContract,
+  handleSubmitPayrunTx,
+  handleUpdateEmployee,
+} from "./routes/payroll";
 import { handleGetEmployeePortal } from "./routes/employee";
 
 function getCorsAllowedOrigins(): string[] {
@@ -60,6 +69,9 @@ export function createServer() {
   // Payroll API (employer)
   app.get("/api/employer/state", requireAuth, requireRole(["employer", "admin"]), handleGetEmployerState);
   app.post("/api/employer/employees", requireAuth, requireRole(["employer", "admin"]), handleCreateEmployee);
+  app.post("/api/employer/employees/import", requireAuth, requireRole(["employer", "admin"]), handleImportEmployeesCsv);
+  app.patch("/api/employer/employees/:employeeId", requireAuth, requireRole(["employer", "admin"]), handleUpdateEmployee);
+  app.delete("/api/employer/employees/:employeeId", requireAuth, requireRole(["employer", "admin"]), handleDeleteEmployee);
   app.post("/api/employer/payroll-contract", requireAuth, requireRole(["employer", "admin"]), handleSetPayrollContract);
   app.post("/api/employer/payruns/draft", requireAuth, requireRole(["employer", "admin"]), handleCreatePayrunDraft);
   app.post("/api/employer/payruns/submit", requireAuth, requireRole(["employer", "admin"]), handleSubmitPayrunTx);
