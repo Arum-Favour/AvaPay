@@ -10,25 +10,15 @@ import {
   Zap,
   ExternalLink,
   Info,
-  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import { useAccount, useReadContracts } from "wagmi";
+import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
-import { avalancheFuji } from "viem/chains";
-import { formatUnits } from "viem";
 import type { EmployeePortalResponse } from "@shared/api";
-import { FUJI_USDC_ADDRESS } from "@shared/constants";
-
-const erc20Abi = [
-  { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "balance", type: "uint256" }] },
-  { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
-] as const;
 
 function formatUsdc(usdc6: number, fractionDigits = 2) {
   return (usdc6 / 1_000_000).toLocaleString(undefined, {
@@ -41,25 +31,7 @@ export default function EmployeePortal() {
   const { user } = useAuth();
   const { address } = useAccount();
 
-  // Get employee's connected wallet USDC balance
-  const connectedWalletBalance = useReadContracts({
-    contracts: address
-      ? ([
-          { address: FUJI_USDC_ADDRESS as `0x${string}`, abi: erc20Abi, functionName: "balanceOf", args: [address as `0x${string}`], chainId: avalancheFuji.id },
-          { address: FUJI_USDC_ADDRESS as `0x${string}`, abi: erc20Abi, functionName: "decimals", chainId: avalancheFuji.id },
-        ] as const)
-      : ([] as const),
-    query: { enabled: !!address },
-  });
-
-  const walletBalanceUsdc6 = React.useMemo(() => {
-    if (connectedWalletBalance.data?.[0]?.result != null && connectedWalletBalance.data?.[1]?.result != null) {
-      return Number(formatUnits(connectedWalletBalance.data[0].result as bigint, connectedWalletBalance.data[1].result as number)) * 1_000_000;
-    }
-    return 0;
-  }, [connectedWalletBalance.data]);
-
-  const { data, isLoading, isError, refetch } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["employee-portal"],
     queryFn: async (): Promise<EmployeePortalResponse> => {
       const res = await fetch("/api/employee/portal", { credentials: "include" });
@@ -71,9 +43,51 @@ export default function EmployeePortal() {
 
   const employee = data?.employee ?? null;
   const lifetimeUsdc6 = data?.lifetimeEarningsUsdc6 ?? 0;
+  const withdrawableUsdc6 = data?.withdrawableUsdc6 ?? 0;
   const history = data?.history ?? [];
 
   const salaryMonthlyUsdc6 = employee?.monthlySalaryUsdc6 ?? 0;
+  const salaryNum = salaryMonthlyUsdc6 / 1_000_000;
+  const ratePerSec = salaryNum / (30 * 24 * 3600);
+
+  if (!isLoading && isError) {
+    return (
+      <Layout>
+        <div className="space-y-6 p-6">
+          <h1 className="text-2xl font-extrabold tracking-tight">Employee Portal</h1>
+          <div className="glass-card rounded-2xl p-6 border border-white/5">
+            <p className="text-muted-foreground">Failed to load your payroll data. Please refresh and try again.</p>
+          </div>
+        </div>
+      </Layout>
+    );
+  }
+
+  if (!isLoading && !employee) {
+    return (
+      <Layout>
+        <div className="space-y-6 p-6">
+          <h1 className="text-2xl font-extrabold tracking-tight">No payroll profile found</h1>
+          <div className="glass-card rounded-2xl p-6 border border-white/5 space-y-3">
+            <p className="text-muted-foreground">
+              We could not find an employee record for <span className="font-mono font-bold">{address ?? "this wallet"}</span>.
+            </p>
+            <p className="text-muted-foreground">
+              If you previously received salary payments, your employer may need to add your exact wallet address to the payroll system (wallet address matching is case-sensitive in the database).
+            </p>
+            <p className="text-muted-foreground">
+              Otherwise, create your profile by signing up, then ask your employer to add you as an employee.
+            </p>
+            <a href="/signup">
+              <Button className="rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20">
+                Sign up
+              </Button>
+            </a>
+          </div>
+        </div>
+      </Layout>
+    );
+  }
 
   return (
     <Layout>
@@ -86,7 +100,7 @@ export default function EmployeePortal() {
               <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Live Salary Stream</span>
             </div>
             <h1 className="text-3xl font-extrabold tracking-tight text-glow">
-              {employee?.title ? `${employee.title} Portal` : "Employee Portal"}
+              {employee?.title ? `${employee.name} ` : "Employee Portal"}
             </h1>
             <p className="text-muted-foreground">
               {employee
@@ -135,32 +149,16 @@ export default function EmployeePortal() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-8 border-t border-white/5">
-                <div className="space-y-4">
+                  <div className="space-y-4">
                     <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-muted-foreground uppercase">Your USDC Balance</p>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-muted-foreground hover:text-white"
-                          onClick={() => {
-                            refetch();
-                            connectedWalletBalance.refetch();
-                          }}
-                        >
-                          <RefreshCw className="h-3 w-3" />
-                        </Button>
-                      </div>
+                      <p className="text-xs font-bold text-muted-foreground uppercase">Withdrawable Balance</p>
                       <p className="text-3xl font-bold tabular-nums">
-                        ${formatUsdc(walletBalanceUsdc6, 2)}
+                        ${formatUsdc(withdrawableUsdc6, 2)}
                       </p>
-                      {connectedWalletBalance.isLoading && (
-                        <p className="text-[10px] text-muted-foreground">Loading on-chain balance...</p>
-                      )}
                     </div>
                     <Button
                       className="w-full rounded-2xl bg-primary hover:bg-primary/90 h-14 text-lg font-bold shadow-[0_0_25px_-5px_hsl(var(--primary)/0.6)] group/btn"
-                      disabled={walletBalanceUsdc6 === 0 || (!address && !employee)}
+                      disabled={withdrawableUsdc6 === 0 || (!address && !employee)}
                       onClick={() => {
                         const target = address ?? employee?.wallet;
                         if (!target) return;
@@ -175,8 +173,8 @@ export default function EmployeePortal() {
                   <div className="space-y-4">
                     <div className="space-y-1">
                       <div className="flex justify-between items-center">
-                        <p className="text-xs font-bold text-muted-foreground uppercase">Earnings Progress</p>
-                        <span className="text-[10px] font-bold text-primary">Lifetime: ${formatUsdc(lifetimeUsdc6, 2)}</span>
+                        <p className="text-xs font-bold text-muted-foreground uppercase">Stream Progress</p>
+                        <span className="text-[10px] font-bold text-primary">Approx. monthly accrual</span>
                       </div>
                       <Progress value={Math.min(100, (lifetimeUsdc6 && salaryMonthlyUsdc6 ? (lifetimeUsdc6 / salaryMonthlyUsdc6) * 100 : 0))} className="h-2 bg-white/5" />
                     </div>
@@ -186,13 +184,13 @@ export default function EmployeePortal() {
                           <Zap className="h-4 w-4" />
                         </div>
                         <div>
-                          <p className="text-[10px] font-bold text-muted-foreground uppercase">Monthly Salary</p>
-                          <p className="text-xs font-bold">${formatUsdc(salaryMonthlyUsdc6, 2)} USDC</p>
+                          <p className="text-[10px] font-bold text-muted-foreground uppercase">Current Rate</p>
+                          <p className="text-xs font-bold">{ratePerSec.toFixed(6)} USDC / sec</p>
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className="text-[10px] font-bold text-muted-foreground uppercase">Total Received</p>
-                        <p className="text-xs font-bold text-emerald-500">${formatUsdc(lifetimeUsdc6, 2)}</p>
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase">Next unlock</p>
+                        <p className="text-xs font-bold">~ 12 minutes</p>
                       </div>
                     </div>
                   </div>
@@ -207,34 +205,17 @@ export default function EmployeePortal() {
                   <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
                     <Wallet className="h-5 w-5" />
                   </div>
-                  <h4 className="font-bold">Your Wallet</h4>
+                  <h4 className="font-bold">Destination Wallet</h4>
                 </div>
                 <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                  <p className="text-xs text-muted-foreground mb-1">Connected Address</p>
+                  <p className="text-xs text-muted-foreground mb-1">Your Avalanche Address</p>
                   <p className="text-sm font-mono font-bold break-all">
                     {address ?? employee?.wallet ?? "Not connected"}
                   </p>
                 </div>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1 rounded-xl border-white/10 bg-white/5 hover:bg-white/10"
-                    asChild
-                  >
-                    <a
-                      href={`https://testnet.snowtrace.io/address/${address ?? employee?.wallet}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <ExternalLink className="mr-2 h-3 w-3" />
-                      View on Snowtrace
-                    </a>
-                  </Button>
-                </div>
                 <p className="text-[10px] text-muted-foreground flex gap-1.5 items-start">
                   <Info className="h-3 w-3 shrink-0" />
-                  Your salary payments are sent directly to this wallet on Avalanche C-Chain.
+                  All withdrawals are processed instantly on-chain. Ensure your wallet supports USDC on Avalanche C-Chain.
                 </p>
               </div>
 
@@ -279,60 +260,49 @@ export default function EmployeePortal() {
             </div>
             
             <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-              {history.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <p className="text-sm">No payment history yet.</p>
-                  <p className="text-xs mt-1">Your salary payments will appear here.</p>
-                </div>
-              ) : (
-                history.map((tx) => (
-                  <div key={tx.id} className="p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-primary/30 transition-all group">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="space-y-1">
-                        <p className="text-sm font-bold group-hover:text-primary transition-colors">Salary Payment</p>
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Clock className="h-3 w-3" />
-                          {new Date(tx.createdAt).toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className={cn(
-                          "text-sm font-black",
-                          "text-emerald-500"
-                        )}>
-                          + {formatUsdc(tx.amountUsdc6, 2)} USDC
-                        </p>
+              {history.map((tx) => (
+                <div key={tx.id} className="p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-primary/30 transition-all group cursor-pointer">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-bold group-hover:text-primary transition-colors">Salary Payment</p>
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Clock className="h-3 w-3" />
+                        {new Date(tx.createdAt).toLocaleString()}
                       </div>
                     </div>
-                    
-                    <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                      <div className="flex items-center gap-1.5">
-                        <div className={cn(
-                          "h-1.5 w-1.5 rounded-full",
-                          tx.status === "paid" ? "bg-emerald-500" : tx.status === "queued" ? "bg-amber-500" : "bg-destructive"
-                        )} />
-                        <span className={cn(
-                          "text-[10px] font-bold uppercase tracking-widest",
-                          tx.status === "paid" ? "text-emerald-500" : tx.status === "queued" ? "text-amber-500" : "text-destructive"
-                        )}>
-                          {tx.status.toUpperCase()}
-                        </span>
-                      </div>
-                      {tx.txHash && (
+                    <div className="text-right">
+                      <p className={cn(
+                        "text-sm font-black",
+                        "text-emerald-500"
+                      )}>
+                        + {formatUsdc(tx.amountUsdc6, 2)} USDC
+                      </p>
+                      {tx.txHash ? (
                         <a
                           href={`https://testnet.snowtrace.io/tx/${tx.txHash}`}
                           target="_blank"
                           rel="noreferrer"
-                          className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary"
+                          className="text-[10px] font-mono text-muted-foreground hover:text-primary"
                         >
-                          View on Snowtrace
-                          <ExternalLink className="h-3 w-3" />
+                          {tx.txHash}
                         </a>
+                      ) : (
+                        <p className="text-[10px] font-mono text-muted-foreground">No tx hash yet</p>
                       )}
                     </div>
                   </div>
-                ))
-              )}
+                  
+                  <div className="flex items-center justify-between pt-3 border-t border-white/5">
+                    <div className="flex items-center gap-1.5">
+                      <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500">
+                        {tx.status.toUpperCase()}
+                      </span>
+                    </div>
+                    <ExternalLink className="h-3 w-3 text-muted-foreground group-hover:text-white transition-colors" />
+                  </div>
+                </div>
+              ))}
             </div>
             
             <div className="p-6 bg-primary/5 border-t border-white/5">

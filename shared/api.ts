@@ -13,9 +13,23 @@ export interface DemoResponse {
 
 export type UserRole = "employer" | "employee" | "admin";
 
+/** Returned in JSON `code` when POST /api/auth/verify has intent=login but no user exists for the wallet */
+export const AUTH_ERROR_ACCOUNT_NOT_REGISTERED = "ACCOUNT_NOT_REGISTERED" as const;
+/** Returned when wallet exists but not for the selected sign-in role. */
+export const AUTH_ERROR_ROLE_MISMATCH = "AUTH_ROLE_MISMATCH" as const;
+/** Returned when role-specific profile data is missing for selected sign-in role. */
+export const AUTH_ERROR_ROLE_PROFILE_MISSING = "AUTH_ROLE_PROFILE_MISSING" as const;
+
+/**
+ * Returned in JSON `code` when an authenticated employer user has not yet set up their employer/company profile.
+ * Employer UI should show a "complete setup / sign up" prompt instead of silently creating random records.
+ */
+export const EMPLOYER_ERROR_COMPANY_NOT_SETUP = "EMPLOYER_COMPANY_NOT_SETUP" as const;
+
 export interface ApiCompany {
   id: string;
   ownerUserId: string;
+  ownerWalletAddress: string;
   name: string;
   payrollContractAddress: string | null;
   createdAt: number;

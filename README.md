@@ -94,15 +94,25 @@ cd avapay
 
 #### 2. Environment configuration
 
-Create `.env` from `.env.example` in the project root:
+Create `.env` from `.env.example` in the project root.
+
+**Server (Express / SIWE)**
 
 - **Required**
   - `JWT_SECRET` – strong secret, at least 32 characters (used for SIWE session JWTs).
   - `MONGODB_URI` – MongoDB connection string.
   - `MONGODB_DB_NAME` – database name (default `avapay` if omitted).
 - **Optional**
-  - `CORS_ORIGIN` – allowed frontend origin (defaults to `http://localhost:8080`).
+  - `CORS_ORIGIN` – comma-separated list of allowed browser origins for credentialed CORS (e.g. `http://localhost:8080,http://192.168.1.5:8080`). The server always includes `http://localhost:8080` and `http://127.0.0.1:8080` in dev; add LAN URLs if you open the app from another host.
+  - **SIWE cookies**: If the UI is loaded from `http://localhost:8080` but `VITE_API_BASE_URL` points at another host (e.g. a LAN IP), the browser treats that as cross-site and session cookies may not work reliably. Prefer **one origin**: either leave `VITE_API_BASE_URL` unset (same host as Vite) **or** open the app at the same host as the API (e.g. `http://192.168.x.x:8080`).
   - `AVALANCHE_CHAIN_ID` – defaults to `43113` (Fuji) if not set.
+
+**Client (Vite — prefix `VITE_`)**
+
+- **Required**
+  - `VITE_PRIVY_APP_ID` – from [Privy dashboard](https://dashboard.privy.io) (wallet + embedded wallet; wagmi uses `@privy-io/wagmi`).
+- **Optional**
+  - `VITE_API_BASE_URL` – if the static frontend is hosted **without** the Express API on the same origin (e.g. static CDN + API on Render), set this to the API origin **with no trailing slash** (e.g. `https://your-api.onrender.com`). Otherwise auth calls return HTML (`<!doctype`) and JSON parsing fails.
 
 Example:
 
@@ -112,6 +122,8 @@ MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB_NAME=avapay
 CORS_ORIGIN=http://localhost:8080
 AVALANCHE_CHAIN_ID=43113
+VITE_PRIVY_APP_ID=your-privy-app-id
+# VITE_API_BASE_URL=https://your-api.onrender.com
 ```
 
 #### 3. Install dependencies
@@ -127,6 +139,10 @@ Or with npm:
 ```bash
 npm install
 ```
+
+#### Browser `Buffer` (Privy / signing)
+
+The app loads a small **`Buffer` polyfill** (`client/polyfills.ts`) so Privy’s sign UI and related crypto code don’t throw `ReferenceError: Buffer is not defined` in the browser. Vite is configured with a `buffer` alias and `global` → `globalThis`.
 
 #### 4. Run the dev server
 

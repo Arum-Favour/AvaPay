@@ -38,29 +38,64 @@ import { useAuth } from "@/hooks/use-auth";
 import type { EmployerStateResponse } from "@shared/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useAccount, usePublicClient, useConnectorClient, useReadContracts, useReadContract, useWalletClient } from "wagmi";
+import { useAccount, usePublicClient, useWalletClient, useReadContracts, useReadContract } from "wagmi";
 import { avalancheFuji } from "viem/chains";
 import { formatUnits } from "viem";
 import { avapayBatchPayrollAbi } from "@/lib/contracts/avapayBatchPayroll";
 import { FUJI_USDC_ADDRESS } from "@shared/constants";
+import { ApiError, EMPLOYER_ERROR_COMPANY_NOT_SETUP, fetchJson } from "@/lib/api";
 
 const erc20Abi = [
   { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "balance", type: "uint256" }] },
   { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
-  { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ name: "", type: "bool" }] },
-  { type: "function", name: "allowance", stateMutability: "view", inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "string" }] },
+  {
+    type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "remaining", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "success", type: "bool" }],
+  },
 ] as const;
 
 function formatUsdc(usdc6: number) {
   return (usdc6 / 1_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function parseUsdcToUsdc6(input: string): bigint | null {
+  const s = input.trim();
+  if (!s) return null;
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  const [intPart, fracPart = ""] = s.split(".");
+  const frac = (fracPart + "000000").slice(0, 6);
+  return BigInt(intPart) * 1_000_000n + BigInt(frac);
+}
+
+function formatUsdc6Bigint(usdc6: bigint): string {
+  const intPart = usdc6 / 1_000_000n;
+  const frac = usdc6 % 1_000_000n; // 0..999999
+  const twoDec = frac / 10_000n; // 2 decimals
+  return `${intPart.toString()}.${twoDec.toString().padStart(2, "0")}`;
+}
+
 export default function Employer() {
   const { user } = useAuth();
-  const { address: employerAddress, status: accountStatus } = useAccount();
+  const { address: employerAddress } = useAccount();
   const qc = useQueryClient();
   const publicClient = usePublicClient();
-  const { data: connectorClient } = useConnectorClient();
   const { data: walletClient } = useWalletClient();
 
   const treasuryUsdc = useReadContracts({
@@ -80,15 +115,13 @@ export default function Employer() {
   const employerState = useQuery({
     queryKey: ["employer-state"],
     queryFn: async (): Promise<EmployerStateResponse> => {
-      const res = await fetch("/api/employer/state", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to load employer state");
-      return res.json();
+      return fetchJson<EmployerStateResponse>("/api/employer/state");
     },
     enabled: !!user,
   });
 
   const contractAddress = employerState.data?.company?.payrollContractAddress ?? null;
-  const { data: vaultBalanceWei } = useReadContract({
+  const { data: vaultBalanceWei, refetch: refetchVaultBalance } = useReadContract({
     address: contractAddress as `0x${string}` | undefined,
     abi: avapayBatchPayrollAbi,
     functionName: "balance",
@@ -96,6 +129,20 @@ export default function Employer() {
     query: { enabled: !!contractAddress },
   });
   const vaultBalanceUsdc6 = vaultBalanceWei != null ? Number(vaultBalanceWei) : 0;
+
+  const { data: usdcAllowanceWei, refetch: refetchUsdcAllowance } = useReadContract({
+    address: FUJI_USDC_ADDRESS as `0x${string}`,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: employerAddress && contractAddress ? [employerAddress as `0x${string}`, contractAddress as `0x${string}`] : undefined,
+    chainId: avalancheFuji.id,
+    query: { enabled: !!employerAddress && !!contractAddress },
+  });
+  const usdcAllowanceUsdc6 = usdcAllowanceWei ?? 0n;
+
+  type FundingPhase = "idle" | "preparing" | "confirm_wallet" | "confirming_network" | "done";
+  const [fundAmountInput, setFundAmountInput] = React.useState<string>("");
+  const [fundPhase, setFundPhase] = React.useState<FundingPhase>("idle");
 
   const createEmployee = useMutation({
     mutationFn: async (input: { name: string; title?: string; wallet: string; monthlySalaryUsdc: string }) => {
@@ -128,7 +175,6 @@ export default function Employer() {
   const [newTitle, setNewTitle] = React.useState("");
   const [newWallet, setNewWallet] = React.useState("");
   const [newSalary, setNewSalary] = React.useState("");
-  const [depositAmount, setDepositAmount] = React.useState("");
 
   const createPayrunDraft = useMutation({
     mutationFn: async () => {
@@ -151,67 +197,12 @@ export default function Employer() {
     onError: (e: any) => toast.error("Create payrun failed", { description: e?.message ?? String(e) }),
   });
 
-  // Check USDC allowance for the vault
-  const usdcAllowance = useReadContract({
-    address: FUJI_USDC_ADDRESS as `0x${string}`,
-    abi: erc20Abi,
-    functionName: "allowance",
-    args: employerAddress && contractAddress ? [employerAddress as `0x${string}`, contractAddress as `0x${string}`] : undefined,
-    query: { enabled: !!employerAddress && !!contractAddress },
-  });
-
-  const approveUsdc = useMutation({
-    mutationFn: async () => {
-      if (!walletClient || !publicClient || !contractAddress) throw new Error("Wallet or contract not ready");
-      const amountUsdc6 = Math.round(Number(depositAmount) * 1_000_000);
-      const hash = await walletClient.writeContract({
-        chain: avalancheFuji,
-        account: walletClient.account,
-        address: FUJI_USDC_ADDRESS,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [contractAddress as `0x${string}`, BigInt(amountUsdc6)],
-      });
-      await publicClient.waitForTransactionReceipt({ hash });
-      return hash;
-    },
-    onSuccess: (hash) => {
-      toast.success("USDC approved", { description: hash });
-      usdcAllowance.refetch();
-    },
-    onError: (e: any) => toast.error("Approve failed", { description: e?.message ?? String(e) }),
-  });
-
-  const depositToVault = useMutation({
-    mutationFn: async () => {
-      if (!walletClient || !publicClient || !contractAddress) throw new Error("Wallet or contract not ready");
-      const amountUsdc6 = Math.round(Number(depositAmount) * 1_000_000);
-      const hash = await walletClient.writeContract({
-        chain: avalancheFuji,
-        account: walletClient.account,
-        address: contractAddress as `0x${string}`,
-        abi: avapayBatchPayrollAbi,
-        functionName: "depositERC20",
-        args: [BigInt(amountUsdc6)],
-      });
-      await publicClient.waitForTransactionReceipt({ hash });
-      return hash;
-    },
-    onSuccess: (hash) => {
-      toast.success("Deposited to vault", { description: hash });
-      qc.invalidateQueries({ queryKey: ["employer-state"] });
-      treasuryUsdc.refetch();
-    },
-    onError: (e: any) => toast.error("Deposit failed", { description: e?.message ?? String(e) }),
-  });
-
   const executeLatestDraft = useMutation({
     mutationFn: async () => {
       const state = employerState.data;
       if (!state) throw new Error("Employer state not loaded");
       if (!state.company.payrollContractAddress) throw new Error("No payroll contract set. Deploy one in Smart Contracts.");
       if (!walletClient || !publicClient) throw new Error("Connect wallet");
-      if (accountStatus !== "connected") throw new Error("Connect wallet");
 
       const draft = [...state.payruns].find((p) => p.status === "draft");
       if (!draft) throw new Error("No draft payrun found. Create one first.");
@@ -224,15 +215,17 @@ export default function Employer() {
         address: state.company.payrollContractAddress as `0x${string}`,
         abi: avapayBatchPayrollAbi,
         functionName: "balance",
-      } as any);
+        // wagmi v3/v4 typing requires `authorizationList` for readContract params
+        authorizationList: [],
+      });
       const required = draft.totalAmountUsdc6;
-      if ((vaultBal as bigint) < BigInt(required)) {
+      if (vaultBal < BigInt(required)) {
         throw new Error(
           `Vault has insufficient USDC. Deposit at least ${formatUsdc(required)} USDC into the vault first (approve + depositERC20 on the contract). Current vault: ${formatUsdc(Number(vaultBal))} USDC.`
         );
       }
 
-      const hash = await (walletClient as any).writeContract({
+      const hash = await walletClient.writeContract({
         chain: avalancheFuji,
         account: walletClient.account,
         address: state.company.payrollContractAddress as `0x${string}`,
@@ -258,7 +251,65 @@ export default function Employer() {
     onError: (e: any) => toast.error("Execution failed", { description: e?.message ?? String(e) }),
   });
 
+  const fundingBusy = fundPhase !== "idle" && fundPhase !== "done";
+
+  const approveAndDeposit = async (amountUsdc6: bigint) => {
+    if (!walletClient || !publicClient) throw new Error("Connect wallet");
+    if (!contractAddress) throw new Error("No payroll contract set. Deploy one in Smart Contracts.");
+    if (!employerAddress) throw new Error("Connect wallet");
+    if (amountUsdc6 <= 0n) throw new Error("Enter a valid amount");
+    if (amountUsdc6 > BigInt(treasuryBalanceUsdc6)) throw new Error("Insufficient treasury balance");
+
+    const contractAddr = contractAddress as `0x${string}`;
+    const ownerAddr = employerAddress as `0x${string}`;
+
+    // Step 1: Approve ERC20 spending to the payroll vault contract (required by the contract flow).
+    if (usdcAllowanceUsdc6 < amountUsdc6) {
+      setFundPhase("preparing");
+      setFundPhase("confirm_wallet");
+      const approveHash = await walletClient.writeContract({
+        chain: avalancheFuji,
+        account: walletClient.account,
+        address: FUJI_USDC_ADDRESS as `0x${string}`,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [contractAddr, amountUsdc6],
+      });
+      setFundPhase("confirming_network");
+      await publicClient.waitForTransactionReceipt({ hash: approveHash });
+      setFundPhase("done");
+      toast.success("USDC approved", { description: approveHash });
+      await refetchUsdcAllowance();
+      setFundPhase("idle");
+    }
+
+    // Step 2: Deposit USDC into the payroll vault contract.
+    setFundPhase("preparing");
+    setFundPhase("confirm_wallet");
+    const depositHash = await walletClient.writeContract({
+      chain: avalancheFuji,
+      account: walletClient.account,
+      address: contractAddr,
+      abi: avapayBatchPayrollAbi,
+      functionName: "depositERC20",
+      args: [amountUsdc6],
+    });
+    setFundPhase("confirming_network");
+    await publicClient.waitForTransactionReceipt({ hash: depositHash });
+    setFundPhase("done");
+    toast.success("Vault funded", { description: depositHash });
+    await refetchVaultBalance();
+    await refetchUsdcAllowance();
+    qc.invalidateQueries({ queryKey: ["employer-state"] });
+    setFundPhase("idle");
+  };
+
   if (!user) return null;
+
+  const employerSetupMissing =
+    employerState.isError &&
+    employerState.error instanceof ApiError &&
+    employerState.error.code === EMPLOYER_ERROR_COMPANY_NOT_SETUP;
 
   const companyName = employerState.data?.company?.name || "Your Company";
   const employees = employerState.data?.employees ?? [];
@@ -267,6 +318,20 @@ export default function Employer() {
   const draftTotalUsdc6 = draftPayrun?.totalAmountUsdc6 ?? 0;
   const vaultHasEnough = vaultBalanceUsdc6 >= draftTotalUsdc6;
 
+  const vaultShortfallUsdc6 = draftPayrun && !vaultHasEnough ? draftTotalUsdc6 - vaultBalanceUsdc6 : 0;
+
+  React.useEffect(() => {
+    if (fundAmountInput.trim()) return;
+    if (vaultShortfallUsdc6 > 0) {
+      setFundAmountInput((vaultShortfallUsdc6 / 1_000_000).toFixed(2));
+    }
+  }, [vaultShortfallUsdc6]);
+
+  const fundAmountUsdc6Bigint = parseUsdcToUsdc6(fundAmountInput) ?? 0n;
+  const needsApproval = contractAddress ? usdcAllowanceUsdc6 < fundAmountUsdc6Bigint : true;
+  const canFundVault =
+    !!contractAddress && fundAmountUsdc6Bigint > 0n && fundAmountUsdc6Bigint <= BigInt(treasuryBalanceUsdc6);
+
   const treasuryDisplay =
     treasuryUsdc.isLoading
       ? "Loading…"
@@ -274,36 +339,58 @@ export default function Employer() {
 
   return (
     <Layout>
-      <div className="space-y-8">
-        {/* Header Section */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Building2 className="h-4 w-4 text-primary" />
-              <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Enterprise Dashboard</span>
+      {employerSetupMissing ? (
+        <div className="space-y-6 p-6">
+          <h1 className="text-2xl font-extrabold tracking-tight">Employer set up required</h1>
+          <div className="glass-card rounded-2xl p-6 border border-white/5 space-y-3">
+            <p className="text-muted-foreground">
+              Your employer profile isn’t set up yet. To continue, please complete sign up.
+            </p>
+            <div className="flex gap-3">
+              <a href="/signup">
+                <Button className="rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20">
+                  Complete sign up
+                </Button>
+              </a>
             </div>
-            <h1 className="text-3xl font-extrabold tracking-tight text-glow">{companyName}</h1>
-            <p className="text-muted-foreground">Managing payroll infrastructure on Avalanche C-Chain.</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" className="rounded-full border-white/10 bg-white/5 hover:bg-white/10">
-              <Download className="mr-2 h-4 w-4" />
-              Export CSV
-            </Button>
-            <Button
-              onClick={() => {
-                const wallet = newWallet.trim();
-                if (!wallet) return toast.error("Enter employee wallet");
-                createEmployee.mutate({ name: newName, title: newTitle || undefined, wallet, monthlySalaryUsdc: newSalary });
-              }}
-              disabled={createEmployee.isPending}
-              className="rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
-            >
-              <Plus className="mr-2 h-4 w-4" />
-              {createEmployee.isPending ? "Adding..." : "Add Employee"}
-            </Button>
           </div>
         </div>
+      ) : (
+        <div className="space-y-8">
+          {/* Header Section */}
+          <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Building2 className="h-4 w-4 text-primary" />
+                <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Enterprise Dashboard</span>
+              </div>
+              <h1 className="text-3xl font-extrabold tracking-tight text-glow">{companyName}</h1>
+              <p className="text-muted-foreground">Managing payroll infrastructure on Avalanche C-Chain.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button variant="outline" className="rounded-full border-white/10 bg-white/5 hover:bg-white/10">
+                <Download className="mr-2 h-4 w-4" />
+                Export CSV
+              </Button>
+              <Button
+                onClick={() => {
+                  const wallet = newWallet.trim();
+                  if (!wallet) return toast.error("Enter employee wallet");
+                  createEmployee.mutate({
+                    name: newName,
+                    title: newTitle || undefined,
+                    wallet: wallet.toLowerCase(),
+                    monthlySalaryUsdc: newSalary,
+                  });
+                }}
+                disabled={createEmployee.isPending}
+                className="rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                {createEmployee.isPending ? "Adding..." : "Add Employee"}
+              </Button>
+            </div>
+          </div>
 
         <div className="glass-card rounded-2xl p-6 border border-white/5">
           <div className="flex flex-col lg:flex-row gap-4 lg:items-end">
@@ -338,51 +425,6 @@ export default function Employer() {
             </Button>
           </div>
         </div>
-
-        {/* Fund Vault Section */}
-        {contractAddress && (
-          <div className="glass-card rounded-2xl p-6 border border-primary/20">
-            <div className="flex flex-col lg:flex-row gap-4 lg:items-end">
-              <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="col-span-2">
-                  <Input
-                    placeholder="Amount to fund (USDC)"
-                    type="number"
-                    className="rounded-xl bg-white/5 border-white/10"
-                    value={depositAmount}
-                    onChange={(e) => setDepositAmount(e.target.value)}
-                  />
-                </div>
-                <div className="text-xs text-muted-foreground flex items-center">
-                  Treasury: {treasuryDisplay}
-                </div>
-              </div>
-              <div className="flex flex-col sm:flex-row gap-3">
-                <Button
-                  variant="outline"
-                  className="rounded-full border-primary/30 text-primary hover:bg-primary/10 hover:border-primary/50"
-                  onClick={() => approveUsdc.mutate()}
-                  disabled={approveUsdc.isPending || !depositAmount || !contractAddress}
-                >
-                  {approveUsdc.isPending ? "Approving..." : `Approve USDC`}
-                </Button>
-                <Button
-                  className="rounded-full bg-emerald-500 hover:bg-emerald-600 shadow-lg shadow-emerald-500/20"
-                  onClick={() => depositToVault.mutate()}
-                  disabled={depositToVault.isPending || !depositAmount || !contractAddress}
-                >
-                  <Wallet className="mr-2 h-4 w-4" />
-                  {depositToVault.isPending ? "Depositing..." : "Deposit to Vault"}
-                </Button>
-              </div>
-            </div>
-            {usdcAllowance.data != null && Number(usdcAllowance.data) > 0 && (
-              <p className="text-xs text-emerald-500 mt-3 flex items-center gap-1">
-                ✓ USDC allowance: {formatUsdc(Number(usdcAllowance.data))} USDC
-              </p>
-            )}
-          </div>
-        )}
 
         {/* Top Cards Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -428,6 +470,107 @@ export default function Employer() {
                   )}
                 </div>
               </div>
+            </div>
+
+            {/* Fund Vault Section */}
+            <div className="mt-6 pt-6 border-t border-white/5">
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">Fund payroll vault</h3>
+                  <p className="text-[11px] text-muted-foreground">
+                    Deposit USDC into your payroll vault. If allowance is missing, we will request an approval first.
+                  </p>
+                </div>
+                <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary border border-primary/20">
+                  <Wallet className="h-5 w-5" />
+                </div>
+              </div>
+
+              {!contractAddress ? (
+                <div className="mt-4 space-y-2">
+                  <p className="text-sm text-muted-foreground">No payroll contract set yet. Deploy one in `Smart Contracts` first.</p>
+                </div>
+              ) : (
+                <div className="mt-4 space-y-4">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground font-bold uppercase tracking-widest">Allowance</span>
+                    <span className="font-bold">
+                      {formatUsdc6Bigint(usdcAllowanceUsdc6)} USDC
+                    </span>
+                  </div>
+
+                  {draftPayrun && !vaultHasEnough ? (
+                    <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/10">
+                      <p className="text-[11px] text-muted-foreground">
+                        Vault shortfall:{" "}
+                        <span className="font-bold text-amber-500">
+                          {formatUsdc(vaultShortfallUsdc6)} USDC
+                        </span>
+                      </p>
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Deposit amount (USDC)</p>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        value={fundAmountInput}
+                        onChange={(e) => setFundAmountInput(e.target.value)}
+                        placeholder="0.00"
+                        inputMode="decimal"
+                        className="h-12 rounded-xl bg-white/5 border-white/10"
+                      />
+                      {vaultShortfallUsdc6 > 0 ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-12 rounded-xl border-white/10 bg-white/5 hover:bg-white/10 px-4"
+                          onClick={() => setFundAmountInput((vaultShortfallUsdc6 / 1_000_000).toFixed(2))}
+                          disabled={fundingBusy}
+                        >
+                          Use suggested
+                        </Button>
+                      ) : null}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Max: {formatUsdc(Math.round(treasuryBalanceUsdc6))} USDC
+                    </div>
+                  </div>
+
+                  <Button
+                    onClick={async () => {
+                      try {
+                        if (!canFundVault) {
+                          if (!fundAmountUsdc6Bigint) toast.error("Enter an amount greater than 0");
+                          return;
+                        }
+                        await approveAndDeposit(fundAmountUsdc6Bigint);
+                        setFundAmountInput("");
+                      } catch (e: any) {
+                        toast.error("Funding failed", { description: e?.message ?? String(e) });
+                      }
+                    }}
+                    disabled={!canFundVault || fundingBusy}
+                    className="w-full h-14 rounded-2xl bg-primary hover:bg-primary/90 text-lg font-black shadow-[0_0_30px_-5px_hsl(var(--primary)/0.5)]"
+                  >
+                    {fundingBusy
+                      ? fundPhase === "preparing"
+                        ? "Preparing…"
+                        : fundPhase === "confirm_wallet"
+                          ? needsApproval
+                            ? "Confirm USDC approval…"
+                            : "Confirm vault deposit…"
+                          : "Confirming on network…"
+                      : needsApproval
+                        ? "Approve & Fund vault"
+                        : "Fund vault"}
+                  </Button>
+
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Step order: approve ERC20 spending (if needed) → confirm vault deposit (depositERC20).
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -593,7 +736,8 @@ export default function Employer() {
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      )}
     </Layout>
   );
 }

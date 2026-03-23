@@ -14,8 +14,16 @@ export interface DbUser {
 export interface DbCompany {
   id: string;
   ownerUserId: string;
+  ownerWalletAddress: string;
   name: string;
   payrollContractAddress: string | null;
+  createdAt: number;
+}
+
+export interface DbEmployeeProfile {
+  id: string;
+  userId: string;
+  walletAddress: string;
   createdAt: number;
 }
 
@@ -82,21 +90,36 @@ export async function upsertUser(params: { address: string; email?: string | nul
   };
 }
 
-export async function ensureCompanyForOwner(params: { ownerUserId: string; name: string }): Promise<DbCompany> {
+export async function getUserByAddress(address: string): Promise<DbUser | null> {
+  const { users } = await getCollections();
+  const doc = await users.findOne<DbUser>({ address: address.toLowerCase() });
+  return doc ?? null;
+}
+
+export async function ensureCompanyForOwner(params: { ownerUserId: string; ownerWalletAddress: string; name: string }): Promise<DbCompany> {
   const { companies } = await getCollections();
   const now = Date.now();
+  const ownerWalletAddress = params.ownerWalletAddress.toLowerCase();
 
-  const existing = await companies.findOne<{ id: string; ownerUserId: string; name: string; payrollContractAddress?: string | null; createdAt?: number }>({
+  const existing = await companies.findOne<{
+    id: string;
+    ownerUserId: string;
+    ownerWalletAddress?: string;
+    name: string;
+    payrollContractAddress?: string | null;
+    createdAt?: number;
+  }>({
     ownerUserId: params.ownerUserId,
   });
 
   if (existing) {
-    if (existing.name !== params.name) {
-      await companies.updateOne({ id: existing.id }, { $set: { name: params.name } });
+    if (existing.name !== params.name || (existing.ownerWalletAddress ?? "").toLowerCase() !== ownerWalletAddress) {
+      await companies.updateOne({ id: existing.id }, { $set: { name: params.name, ownerWalletAddress } });
     }
     return {
       id: existing.id,
       ownerUserId: existing.ownerUserId,
+      ownerWalletAddress,
       name: params.name,
       payrollContractAddress: existing.payrollContractAddress ?? null,
       createdAt: existing.createdAt ?? now,
@@ -107,11 +130,67 @@ export async function ensureCompanyForOwner(params: { ownerUserId: string; name:
   await companies.insertOne({
     id,
     ownerUserId: params.ownerUserId,
+    ownerWalletAddress,
     name: params.name,
     payrollContractAddress: null,
     createdAt: now,
   });
-  return { id, ownerUserId: params.ownerUserId, name: params.name, payrollContractAddress: null, createdAt: now };
+  return {
+    id,
+    ownerUserId: params.ownerUserId,
+    ownerWalletAddress,
+    name: params.name,
+    payrollContractAddress: null,
+    createdAt: now,
+  };
+}
+
+export async function ensureEmployeeProfile(params: {
+  userId: string;
+  walletAddress: string;
+}): Promise<DbEmployeeProfile> {
+  const { employeeProfiles } = await getCollections();
+  const now = Date.now();
+  const walletAddress = params.walletAddress.toLowerCase();
+  const id = randomUUID();
+  await employeeProfiles.updateOne(
+    { userId: params.userId },
+    {
+      $set: { walletAddress },
+      $setOnInsert: { id, userId: params.userId, createdAt: now },
+    },
+    { upsert: true },
+  );
+  const row = await employeeProfiles.findOne<{
+    id: string;
+    userId: string;
+    walletAddress: string;
+    createdAt?: number;
+  }>({ userId: params.userId });
+  if (!row) throw new Error("Failed to upsert employee profile");
+  return {
+    id: row.id,
+    userId: row.userId,
+    walletAddress: row.walletAddress.toLowerCase(),
+    createdAt: row.createdAt ?? now,
+  };
+}
+
+export async function getEmployeeProfileByUserId(userId: string): Promise<DbEmployeeProfile | null> {
+  const { employeeProfiles } = await getCollections();
+  const row = await employeeProfiles.findOne<{
+    id: string;
+    userId: string;
+    walletAddress: string;
+    createdAt?: number;
+  }>({ userId });
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.userId,
+    walletAddress: row.walletAddress.toLowerCase(),
+    createdAt: row.createdAt ?? 0,
+  };
 }
 
 export async function setCompanyPayrollContract(params: { companyId: string; payrollContractAddress: string }): Promise<void> {
@@ -151,25 +230,73 @@ export async function createEmployee(params: {
   monthlySalaryUsdCents: number;
 }): Promise<DbEmployee> {
   const { employees } = await getCollections();
+  const walletNormalized = params.wallet.toLowerCase();
   const now = Date.now();
+
+  // Idempotency across legacy mixed-case records:
+  // - First try a case-insensitive match on the wallet.
+  // - If found, update the existing employee record (preserving `id` so payrun history stays linked).
+  const existing = await employees.findOne<{
+    id: string;
+    companyId: string;
+    name: string;
+    title: string | null;
+    wallet: string;
+    monthlySalaryUsdCents: number;
+    status: string;
+    createdAt?: number;
+  }>({
+    companyId: params.companyId,
+    wallet: { $regex: `^${walletNormalized}$`, $options: "i" },
+  });
+
+  if (existing) {
+    await employees.updateOne(
+      { id: existing.id },
+      {
+        $set: {
+          name: params.name,
+          title: params.title ?? null,
+          wallet: walletNormalized,
+          monthlySalaryUsdCents: params.monthlySalaryUsdCents,
+          status: "active",
+        },
+      },
+    );
+
+    return {
+      id: existing.id,
+      companyId: existing.companyId,
+      name: params.name,
+      title: params.title ?? null,
+      wallet: walletNormalized,
+      monthlySalaryUsdCents: params.monthlySalaryUsdCents,
+      status: "active",
+      createdAt: existing.createdAt ?? now,
+    };
+  }
+
+  // Not found: create a new employee profile.
   const id = randomUUID();
   const doc = {
     id,
     companyId: params.companyId,
     name: params.name,
     title: params.title ?? null,
-    wallet: params.wallet.toLowerCase(),
+    wallet: walletNormalized,
     monthlySalaryUsdCents: params.monthlySalaryUsdCents,
     status: "active" as const,
     createdAt: now,
   };
+
   await employees.insertOne(doc);
+
   return {
     id,
     companyId: params.companyId,
     name: params.name,
     title: params.title ?? null,
-    wallet: params.wallet.toLowerCase(),
+    wallet: walletNormalized,
     monthlySalaryUsdCents: params.monthlySalaryUsdCents,
     status: "active",
     createdAt: now,
@@ -257,13 +384,21 @@ export async function listPayruns(companyId: string): Promise<DbPayrun[]> {
 
 export async function getCompanyByOwner(ownerUserId: string): Promise<DbCompany | null> {
   const { companies } = await getCollections();
-  const row = await companies.findOne<{ id: string; ownerUserId: string; name: string; payrollContractAddress?: string | null; createdAt?: number }>({
+  const row = await companies.findOne<{
+    id: string;
+    ownerUserId: string;
+    ownerWalletAddress?: string;
+    name: string;
+    payrollContractAddress?: string | null;
+    createdAt?: number;
+  }>({
     ownerUserId,
   });
   if (!row) return null;
   return {
     id: row.id,
     ownerUserId: row.ownerUserId,
+    ownerWalletAddress: (row.ownerWalletAddress ?? "").toLowerCase(),
     name: row.name,
     payrollContractAddress: row.payrollContractAddress ?? null,
     createdAt: row.createdAt ?? 0,

@@ -3,6 +3,7 @@ import { MongoClient, type Collection } from "mongodb";
 interface Collections {
   users: Collection;
   companies: Collection;
+  employeeProfiles: Collection;
   employees: Collection;
   payruns: Collection;
   payrunItems: Collection;
@@ -26,6 +27,7 @@ export async function getCollections(): Promise<Collections> {
 
     const users = db.collection("users");
     const companies = db.collection("companies");
+    const employeeProfiles = db.collection("employeeProfiles");
     const employees = db.collection("employees");
     const payruns = db.collection("payruns");
     const payrunItems = db.collection("payrunItems");
@@ -33,13 +35,29 @@ export async function getCollections(): Promise<Collections> {
     await Promise.all([
       users.createIndex({ address: 1 }, { unique: true }),
       companies.createIndex({ ownerUserId: 1 }, { unique: true }),
-      employees.createIndex({ companyId: 1, wallet: 1 }, { unique: true }),
+      employeeProfiles.createIndex({ userId: 1 }, { unique: true }),
+      employeeProfiles.createIndex(
+        { walletAddress: 1 },
+        {
+          unique: true,
+          collation: { locale: "en", strength: 2 },
+          name: "employeeProfiles_wallet_ci_unique",
+        },
+      ),
+      employees.createIndex(
+        { companyId: 1, wallet: 1 },
+        {
+          unique: true,
+          // Case-insensitive uniqueness to prevent duplicates like 0xAbc... vs 0xabc...
+          collation: { locale: "en", strength: 2 },
+          name: "employees_companyId_wallet_ci_unique",
+        },
+      ),
       payruns.createIndex({ companyId: 1, createdAt: -1 }),
       payrunItems.createIndex({ payrunId: 1 }),
-      payrunItems.createIndex({ employeeId: 1 }),
     ]);
 
-    return { users, companies, employees, payruns, payrunItems };
+    return { users, companies, employeeProfiles, employees, payruns, payrunItems };
   })();
 
   return collectionsPromise;

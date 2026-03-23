@@ -1,7 +1,12 @@
 import * as React from "react";
-import { useAccount, useDisconnect } from 'wagmi';
+import { usePrivy } from "@privy-io/react-auth";
+import { useDisconnect } from "wagmi";
+import { apiUrl, fetchJson } from "@/lib/api";
 
 export type UserRole = "employer" | "employee" | "admin" | null;
+
+// UI-friendly progress states for account verification.
+export type AuthProgressStep = "preparing" | "confirm_wallet" | "confirming_network" | "done";
 
 export interface EmployeeData {
   name: string;
@@ -40,18 +45,32 @@ export interface SystemStats {
   treasuryLocked: string;
 }
 
+/** SIWE verify: `login` only allows wallets already in DB; `signup` creates/updates the user profile. */
+export type LoginWithSiweArgs =
+  | {
+      intent: "login";
+      role: Exclude<UserRole, null>;
+      address: string;
+      signMessageAsync: (args: { message: string }) => Promise<`0x${string}`>;
+      onProgress?: (step: AuthProgressStep) => void;
+    }
+  | {
+      intent: "signup";
+      address: string;
+      role: Exclude<UserRole, null>;
+      email?: string;
+      companyName?: string;
+      signMessageAsync: (args: { message: string }) => Promise<`0x${string}`>;
+      onProgress?: (step: AuthProgressStep) => void;
+    };
+
 interface AuthContextType {
   user: UserProfile | null;
   isLoading: boolean;
   systemStats: SystemStats;
-  loginWithSiwe: (args: {
-    address: string;
-    role: Exclude<UserRole, null>;
-    email?: string;
-    companyName?: string;
-    signMessageAsync: (args: { message: string }) => Promise<`0x${string}`>;
-  }) => Promise<void>;
-  signOut: () => void;
+  loginWithSiwe: (args: LoginWithSiweArgs) => Promise<UserProfile>;
+  /** Clears server session, Privy session, and wagmi connection. */
+  signOut: () => Promise<void>;
   updateUser: (details: Partial<UserProfile>) => void;
 }
 
@@ -66,8 +85,8 @@ const defaultSystemStats: SystemStats = {
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = React.useState<UserProfile | null>(null);
-  const { address, isConnected } = useAccount();
-  const { disconnect } = useDisconnect();
+  const { disconnectAsync } = useDisconnect();
+  const { logout } = usePrivy();
   const [isLoading, setIsLoading] = React.useState(true);
   const [systemStats, setSystemStats] = React.useState<SystemStats>(defaultSystemStats);
 
@@ -75,9 +94,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     let cancelled = false;
     async function boot() {
       try {
-        const res = await fetch("/api/auth/me", { credentials: "include" });
+        const res = await fetch(apiUrl("/api/auth/me"), { credentials: "include" });
         if (!res.ok) return;
-        const data = await res.json();
+        const ct = res.headers.get("content-type") ?? "";
+        const text = await res.text();
+        if (!ct.includes("application/json")) {
+          console.warn(
+            "GET /api/auth/me returned non-JSON (likely HTML). Set VITE_API_BASE_URL if the API is on another host.",
+          );
+          return;
+        }
+        const data = JSON.parse(text) as { user?: { userId: string; address: string; role: UserRole } };
         if (!cancelled && data?.user) {
           setUser({
             id: data.user.userId,
@@ -86,6 +113,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             role: data.user.role,
           });
         }
+      } catch {
+        /* ignore boot errors */
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -99,9 +128,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const loginWithSiwe: AuthContextType["loginWithSiwe"] = async (args) => {
     setIsLoading(true);
     try {
-      const nonceRes = await fetch("/api/auth/nonce", { credentials: "include" });
-      if (!nonceRes.ok) throw new Error("Failed to get nonce");
-      const { nonce } = await nonceRes.json();
+      args.onProgress?.("preparing");
+      const { nonce } = await fetchJson<{ nonce: string }>("/api/auth/nonce");
 
       const domain = window.location.host;
       const origin = window.location.origin;
@@ -119,32 +147,44 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         `Chain ID: ${chainId}\n` +
         `Nonce: ${nonce}\n` +
         `Issued At: ${issuedAt}`;
+
+      // User confirmation in the wallet UI (modal / embedded wallet).
+      args.onProgress?.("confirm_wallet");
       const signature = await args.signMessageAsync({ message });
 
-      const verifyRes = await fetch("/api/auth/verify", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          message,
-          signature,
-          role: args.role,
-          email: args.email,
-          companyName: args.companyName,
-        }),
-      });
-      if (!verifyRes.ok) {
-        const err = await verifyRes.json().catch(() => ({}));
-        throw new Error(err?.error ?? "Auth failed");
-      }
-      const data = await verifyRes.json();
+      const body =
+        args.intent === "login"
+          ? { message, signature, intent: "login" as const, role: args.role }
+          : {
+              message,
+              signature,
+              intent: "signup" as const,
+              role: args.role,
+              email: args.email,
+              companyName: args.companyName,
+            };
+
+      // Backend verification step.
+      args.onProgress?.("confirming_network");
+      const data = await fetchJson<{ user: { id: string; address: string; email?: string; role: UserRole } }>(
+        "/api/auth/verify",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
       const u = data?.user;
-      setUser({
+      if (!u) throw new Error("Invalid sign-in response from server");
+      const profile: UserProfile = {
         id: u.id,
         address: u.address,
         email: u.email ?? "",
         role: u.role,
-      });
+      };
+      setUser(profile);
+      args.onProgress?.("done");
+      return profile;
     } finally {
       setIsLoading(false);
     }
@@ -156,11 +196,25 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setUser(newUser);
   };
 
-  const signOut = () => {
+  const signOut = React.useCallback(async () => {
     setUser(null);
-    fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
-    disconnect();
-  };
+    try {
+      await fetch(apiUrl("/api/auth/logout"), { method: "POST", credentials: "include" });
+    } catch {
+      /* ignore */
+    }
+    // Privy owns the wallet session; wagmi disconnect alone leaves Privy connected.
+    try {
+      await logout();
+    } catch (e) {
+      console.warn("[auth] Privy logout:", e);
+    }
+    try {
+      await disconnectAsync();
+    } catch (e) {
+      console.warn("[auth] wagmi disconnect:", e);
+    }
+  }, [disconnectAsync, logout]);
 
   return (
     <AuthContext.Provider value={{ user, isLoading, systemStats, loginWithSiwe, signOut, updateUser }}>

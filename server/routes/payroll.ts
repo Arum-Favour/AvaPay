@@ -9,15 +9,21 @@ import {
   submitPayrunTx,
   setCompanyPayrollContract,
 } from "../domain";
-import type { EmployerStateResponse } from "@shared/api";
+import type { EmployerStateResponse } from "../../shared/api";
+import { EMPLOYER_ERROR_COMPANY_NOT_SETUP } from "../../shared/api";
 import { FUJI_USDC_ADDRESS } from "../../shared/constants";
 
 export const handleGetEmployerState: RequestHandler = async (req, res) => {
   const auth = (req as any).auth as { userId: string } | undefined;
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
-  const company = await getCompanyByOwner(auth.userId);
-  if (!company) return res.status(404).json({ error: "Company not found" });
+  let company = await getCompanyByOwner(auth.userId);
+  if (!company) {
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
+  }
 
   const employees = (await listEmployees(company.id)).map((e) => ({
     id: e.id,
@@ -59,7 +65,11 @@ export const handleCreateEmployee: RequestHandler = async (req, res) => {
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
   const company = await getCompanyByOwner(auth.userId);
-  if (!company) return res.status(404).json({ error: "Company not found" });
+  if (!company)
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
 
   const parsed = createEmployeeSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -68,7 +78,7 @@ export const handleCreateEmployee: RequestHandler = async (req, res) => {
     companyId: company.id,
     name: parsed.data.name,
     title: parsed.data.title ?? null,
-    wallet: parsed.data.wallet,
+    wallet: parsed.data.wallet.toLowerCase(),
     monthlySalaryUsdCents: parsed.data.monthlySalaryUsdc6,
   });
   res.json({
@@ -94,7 +104,11 @@ export const handleSetPayrollContract: RequestHandler = async (req, res) => {
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
   const company = await getCompanyByOwner(auth.userId);
-  if (!company) return res.status(404).json({ error: "Company not found" });
+  if (!company)
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
 
   const parsed = setContractSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
@@ -108,7 +122,11 @@ export const handleCreatePayrunDraft: RequestHandler = async (req, res) => {
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
   const company = await getCompanyByOwner(auth.userId);
-  if (!company) return res.status(404).json({ error: "Company not found" });
+  if (!company)
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
 
   const out = await createPayrunDraft({ companyId: company.id, tokenAddress: FUJI_USDC_ADDRESS });
   res.json(out);
@@ -124,7 +142,11 @@ export const handleSubmitPayrunTx: RequestHandler = async (req, res) => {
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
   const company = await getCompanyByOwner(auth.userId);
-  if (!company) return res.status(404).json({ error: "Company not found" });
+  if (!company)
+    return res.status(403).json({
+      error: "Employer company profile not set up. Please complete sign up.",
+      code: EMPLOYER_ERROR_COMPANY_NOT_SETUP,
+    });
 
   const parsed = submitPayrunSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });

@@ -47,8 +47,8 @@ export function WalletConnect() {
   const { address, isConnected } = useAccount();
   const navigate = useNavigate();
 
-  const handleDisconnect = () => {
-    signOut();
+  const handleDisconnect = async () => {
+    await signOut();
     navigate("/signin");
   };
 

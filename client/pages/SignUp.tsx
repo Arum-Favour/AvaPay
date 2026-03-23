@@ -1,22 +1,20 @@
 import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Wallet, ShieldCheck, Activity, ArrowRight, Loader2, User, Building2, UserCog, Mail } from "lucide-react";
+import { Wallet, ShieldCheck, Activity, ArrowRight, User, Building2, UserCog, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { useAuth, UserRole } from "@/hooks/use-auth";
+import { type UserRole } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
-import { useConnect, useAccount, useSignMessage } from 'wagmi';
+import { useProtocolAuth } from "@/hooks/use-protocol-auth";
+import { toast } from "sonner";
 
 export default function SignUp() {
   const navigate = useNavigate();
-  const { loginWithSiwe, isLoading: isAuthLoading } = useAuth();
-  const { connect, connectors, isPending: isConnectLoading } = useConnect();
-  const { address, isConnected } = useAccount();
-  const { signMessageAsync, isPending: isSignPending } = useSignMessage();
+  const { address, isWalletConnected, connectAccount, signUp, progress, busy } = useProtocolAuth();
   const [email, setEmail] = React.useState("");
   const [companyName, setCompanyName] = React.useState("");
   const [jobTitle, setJobTitle] = React.useState("");
@@ -30,28 +28,44 @@ export default function SignUp() {
     { id: "admin", title: "Protocol Admin", icon: UserCog, desc: "For infrastructure and DAO operators." },
   ];
 
-  const handleSignUp = async () => {
-    if (!isConnected) {
-      const connector = connectors[0];
-      if (connector) connect({ connector });
-      return;
-    }
+  const handleConfirmRegistration = async () => {
+    try {
+      if (!isWalletConnected) {
+        await connectAccount();
+        return;
+      }
 
-    if (address && email && role) {
-      await loginWithSiwe({
-        address,
+      if (!address || !email || !role) return;
+
+      await signUp({
         role,
         email,
         companyName: role === "employer" ? companyName : undefined,
-        signMessageAsync: ({ message }) => signMessageAsync({ account: address as `0x${string}`, message }),
       });
+
       if (role === "employer") navigate("/employer");
       else if (role === "employee") navigate("/employee");
       else navigate("/");
+    } catch (e) {
+      console.error(e);
+      toast.error(e instanceof Error ? e.message : "Signup failed");
     }
   };
 
-  const isLoading = isAuthLoading || isConnectLoading || isSignPending;
+  const progressLabel = (() => {
+    switch (progress) {
+      case "preparing":
+        return "Preparing…";
+      case "confirm_wallet":
+        return "Confirm in account…";
+      case "confirming_network":
+        return "Confirming on network…";
+      case "done":
+        return "Done";
+      default:
+        return "";
+    }
+  })();
 
   return (
     <div className="min-h-screen w-full bg-background flex flex-col items-center justify-center p-6 font-sans relative overflow-hidden">
@@ -254,8 +268,10 @@ export default function SignUp() {
                     <Wallet className="h-8 w-8" />
                   </div>
                   <div className="space-y-1">
-                    <h3 className="text-xl font-bold">Sign Infrastructure Key</h3>
-                    <p className="text-sm text-muted-foreground">Authorize your Avalanche wallet to interact with the protocol.</p>
+                    <h3 className="text-xl font-bold">Verify it&apos;s you</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Confirm in your account to complete registration.
+                    </p>
                   </div>
                 </div>
 
@@ -270,7 +286,7 @@ export default function SignUp() {
                   </div>
                   {address && (
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-muted-foreground uppercase font-bold tracking-widest">Wallet</span>
+                      <span className="text-muted-foreground uppercase font-bold tracking-widest">Account</span>
                       <span className="font-mono text-[10px] truncate max-w-[150px]">{address}</span>
                     </div>
                   )}
@@ -278,22 +294,24 @@ export default function SignUp() {
 
                 <div className="space-y-3">
                   <Button
-                    onClick={handleSignUp}
-                    disabled={isLoading}
+                    onClick={handleConfirmRegistration}
+                    disabled={busy}
                     className="w-full h-14 rounded-2xl bg-primary hover:bg-primary/90 text-lg font-black shadow-[0_0_30px_-5px_hsl(var(--primary)/0.5)] group/btn"
                   >
-                    {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : (
-                      <>
-                        {isConnected ? <ShieldCheck className="mr-3 h-5 w-5" /> : <Wallet className="mr-3 h-5 w-5" />}
-                        {isConnected ? "Finalize Registration" : "Connect & Register"}
-                      </>
-                    )}
+                    <>
+                      {busy ? null : isWalletConnected ? (
+                        <ShieldCheck className="mr-3 h-5 w-5" />
+                      ) : (
+                        <Wallet className="mr-3 h-5 w-5" />
+                      )}
+                      {busy ? progressLabel || "Confirming on network…" : isWalletConnected ? "Confirm registration" : "Connect account"}
+                    </>
                   </Button>
                   <button
                     onClick={() => setStep(3)}
                     className="w-full text-[11px] text-muted-foreground hover:text-white font-bold uppercase tracking-widest"
                   >
-                    Verify Email Again
+                    Change email
                   </button>
                 </div>
               </div>
@@ -303,7 +321,10 @@ export default function SignUp() {
 
         <div className="text-center">
           <p className="text-[11px] text-muted-foreground font-bold uppercase tracking-widest">
-            Already registered? <Link to="/signin" className="text-primary hover:underline">Log in to Secure Dashboard</Link>
+            Already registered?{" "}
+            <Link to="/signin" className="text-primary hover:underline">
+              Sign in
+            </Link>
           </p>
         </div>
       </div>

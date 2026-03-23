@@ -1,6 +1,6 @@
 import type { RequestHandler } from "express";
 import { getCollections } from "../db";
-import type { EmployeePortalResponse } from "@shared/api";
+import type { EmployeePortalResponse } from "../../shared/api";
 
 export const handleGetEmployeePortal: RequestHandler = async (req, res) => {
   const auth = (req as any).auth as { address: string } | undefined;
@@ -10,6 +10,7 @@ export const handleGetEmployeePortal: RequestHandler = async (req, res) => {
 
   const { employees, payruns, payrunItems } = await getCollections();
 
+  // Mongo string match is case-sensitive; handle possible legacy records by searching case-insensitively.
   const employeeRow = await employees.findOne<{
     id: string;
     companyId: string;
@@ -19,7 +20,7 @@ export const handleGetEmployeePortal: RequestHandler = async (req, res) => {
     monthlySalaryUsdCents: number;
     status: string;
     createdAt?: number;
-  }>({ wallet: address.toLowerCase() });
+  }>({ wallet: { $regex: `^${address}$`, $options: "i" } });
 
   if (!employeeRow) {
     const empty: EmployeePortalResponse = {

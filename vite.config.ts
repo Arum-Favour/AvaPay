@@ -4,6 +4,10 @@ import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  define: {
+    // Some wallet / crypto deps expect Node's `global`
+    global: "globalThis",
+  },
   server: {
     host: "::",
     port: 8080,
@@ -20,6 +24,15 @@ export default defineConfig(({ mode }) => ({
     alias: {
       "@": path.resolve(__dirname, "./client"),
       "@shared": path.resolve(__dirname, "./shared"),
+      buffer: "buffer",
+    },
+  },
+  optimizeDeps: {
+    include: ["buffer"],
+    esbuildOptions: {
+      define: {
+        global: "globalThis",
+      },
     },
   },
 }));

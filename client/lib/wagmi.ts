@@ -1,12 +1,10 @@
-import { http, createConfig } from 'wagmi';
-import { avalancheFuji } from 'wagmi/chains';
-import { injected } from 'wagmi/connectors';
+import { createConfig } from "@privy-io/wagmi";
+import { http } from "wagmi";
+import { avalancheFuji } from "wagmi/chains";
 
-export const config = createConfig({
+/** Wagmi config must use `createConfig` from `@privy-io/wagmi` when Privy is enabled. */
+export const wagmiConfig = createConfig({
   chains: [avalancheFuji],
-  connectors: [
-    injected(),
-  ],
   transports: {
     [avalancheFuji.id]: http(),
   },

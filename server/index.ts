@@ -7,14 +7,35 @@ import { handleAuthLogout, handleAuthMe, handleAuthNonce, handleAuthVerify, requ
 import { handleCreateEmployee, handleCreatePayrunDraft, handleGetEmployerState, handleSetPayrollContract, handleSubmitPayrunTx } from "./routes/payroll";
 import { handleGetEmployeePortal } from "./routes/employee";
 
+function getCorsAllowedOrigins(): string[] {
+  const fromEnv = (process.env.CORS_ORIGIN ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  // Common Vite dev URLs (page may be opened as localhost while VITE_API_BASE_URL uses a LAN IP, or vice versa)
+  const devDefaults = ["http://localhost:8080", "http://127.0.0.1:8080"];
+  return [...new Set([...devDefaults, ...fromEnv])];
+}
+
 export function createServer() {
   const app = express();
 
-  // Middleware
-  const allowOrigin = process.env.CORS_ORIGIN ?? "http://localhost:8080";
+  // Middleware — credentials + cross-origin SPA need an explicit allowlist (cannot use "*")
+  const allowedOrigins = getCorsAllowedOrigins();
   app.use(
     cors({
-      origin: allowOrigin,
+      origin: (origin, callback) => {
+        // Same-origin / server-to-server / curl often omit Origin
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        if (allowedOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(null, false);
+      },
       credentials: true,
     }),
   );
