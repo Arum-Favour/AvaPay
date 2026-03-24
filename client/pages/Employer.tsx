@@ -4,6 +4,7 @@ import {
   Building2, 
   Download, 
   FileUp,
+  FileDown,
   Plus, 
   Wallet, 
   MoreVertical, 
@@ -118,6 +119,54 @@ function parseCsvLine(line: string): string[] {
   }
   out.push(current.trim());
   return out;
+}
+
+/** Normalize header cell for matching (handles spaces, BOM, Excel quirks). */
+function normalizeCsvHeaderCell(h: string): string {
+  return h
+    .replace(/^\uFEFF/, "")
+    .toLowerCase()
+    .replace(/[\s_\-()]/g, "")
+    .trim();
+}
+
+/**
+ * Parse monthly salary to USDC micro-units. Handles Excel-style thousands (2,500.00),
+ * currency symbols, and plain decimals.
+ */
+function parseMonthlySalaryToUsdc6(raw: string): { ok: true; value: number } | { ok: false; reason: string } {
+  let s = raw.trim().replace(/^\$/, "").replace(/\s/g, "");
+  if (!s) return { ok: false, reason: "salary is empty" };
+
+  // Heuristic: if last comma is after last dot → European (1.234,56), else US (1,234.56)
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
+  if (lastComma > lastDot) {
+    s = s.replace(/\./g, "").replace(",", ".");
+  } else {
+    s = s.replace(/,/g, "");
+  }
+
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) {
+    return { ok: false, reason: `invalid salary "${raw}"` };
+  }
+  return { ok: true, value: Math.round(n * 1_000_000) };
+}
+
+const EMPLOYEE_CSV_TEMPLATE = `name,role,wallet,monthlySalary
+Jane Doe,Engineer,0x0000000000000000000000000000000000000001,2500.50
+John Smith,Designer,0x0000000000000000000000000000000000000002,3200
+`;
+
+function downloadEmployeeCsvTemplate() {
+  const blob = new Blob([EMPLOYEE_CSV_TEMPLATE], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "avapay-employees-template.csv";
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function Employer() {
@@ -442,43 +491,67 @@ export default function Employer() {
 
   const handleCsvSelected = async (file: File | null) => {
     if (!file) return;
-    const text = await file.text();
+    let text = await file.text();
+    // UTF-8 BOM from Excel / some editors
+    if (text.charCodeAt(0) === 0xfeff) {
+      text = text.slice(1);
+    }
     const lines = text
       .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
+      .map((l) => l.replace(/\r$/, "").trimEnd())
+      .filter((l) => l.replace(/\uFEFF/g, "").trim().length > 0);
     if (lines.length < 2) {
-      toast.error("CSV must include a header and at least one row");
+      toast.error("CSV must include a header and at least one data row");
       return;
     }
-    const header = parseCsvLine(lines[0]).map((h) => h.toLowerCase().replace(/[\s_]/g, "").trim());
-    const required = ["name", "role", "wallet", "monthlysalary"];
-    if (!required.every((r) => header.includes(r))) {
-      toast.error("CSV header must include: name, role, wallet, monthlySalary");
-      return;
-    }
-    const idx = {
-      name: header.indexOf("name"),
-      role: header.indexOf("role"),
-      wallet: header.indexOf("wallet"),
-      salary: header.indexOf("monthlysalary"),
+    const headerCells = parseCsvLine(lines[0]).map((h) => normalizeCsvHeaderCell(h));
+    const findCol = (candidates: string[]) => {
+      for (const c of candidates) {
+        const j = headerCells.indexOf(c);
+        if (j >= 0) return j;
+      }
+      return -1;
     };
+    const nameIdx = findCol(["name", "fullname", "employeename"]);
+    const roleIdx = findCol(["role", "title", "jobtitle"]);
+    const walletIdx = findCol(["wallet", "walletaddress", "address"]);
+    let salaryIdx = findCol(["monthlysalary", "monthlypay", "salary"]);
+    if (salaryIdx < 0) {
+      salaryIdx = headerCells.findIndex((h) => h.includes("salary") || h.includes("monthly"));
+    }
+    if (nameIdx < 0 || roleIdx < 0 || walletIdx < 0 || salaryIdx < 0) {
+      toast.error(
+        "CSV header must include columns: name, role, wallet, monthlySalary (see Download template)",
+      );
+      return;
+    }
     const rows: Array<{ name: string; role: string; wallet: string; monthlySalaryUsdc6: number }> = [];
     for (let i = 1; i < lines.length; i++) {
+      const lineNo = i + 1; // 1-based line number in file (including header)
       const cols = parseCsvLine(lines[i]);
-      const name = (cols[idx.name] ?? "").trim();
-      const role = (cols[idx.role] ?? "").trim();
-      const wallet = (cols[idx.wallet] ?? "").trim().toLowerCase();
-      const salaryRaw = (cols[idx.salary] ?? "").trim();
-      const salary = Math.round(Number(salaryRaw) * 1_000_000);
-      if (!name || !role || !/^0x[a-f0-9]{40}$/i.test(wallet) || !Number.isFinite(salary) || salary < 0) {
-        toast.error(`Invalid CSV row ${i + 1}`);
+      const name = (cols[nameIdx] ?? "").trim();
+      const role = (cols[roleIdx] ?? "").trim();
+      const wallet = (cols[walletIdx] ?? "").trim().replace(/^"|"$/g, "").toLowerCase();
+      const salaryRaw = (cols[salaryIdx] ?? "").trim();
+      // Skip completely empty rows (Excel often adds trailing blank lines)
+      if (!name && !role && !wallet && !salaryRaw) continue;
+      if (!name || !role) {
+        toast.error(`Row ${lineNo}: name and role are required`);
         return;
       }
-      rows.push({ name, role, wallet, monthlySalaryUsdc6: salary });
+      if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
+        toast.error(`Row ${lineNo}: invalid wallet (expected 0x + 40 hex chars). Got: ${wallet.slice(0, 20)}…`);
+        return;
+      }
+      const salaryParsed = parseMonthlySalaryToUsdc6(salaryRaw);
+      if (!salaryParsed.ok) {
+        toast.error(`Row ${lineNo}: ${salaryParsed.reason}. Use a number like 2500 or 2500.50 (commas as thousands are OK).`);
+        return;
+      }
+      rows.push({ name, role, wallet, monthlySalaryUsdc6: salaryParsed.value });
     }
     if (!rows.length) {
-      toast.error("No valid employee rows found");
+      toast.error("No data rows found (only empty lines after the header?)");
       return;
     }
     await importEmployeesCsv.mutateAsync(rows);
@@ -562,6 +635,15 @@ export default function Employer() {
                 e.currentTarget.value = "";
               }}
             />
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-full border-white/10 bg-white/5 hover:bg-white/10"
+              onClick={() => downloadEmployeeCsvTemplate()}
+            >
+              <FileDown className="mr-2 h-4 w-4" />
+              Download template
+            </Button>
             <Button
               variant="outline"
               className="rounded-full border-white/10 bg-white/5 hover:bg-white/10"
