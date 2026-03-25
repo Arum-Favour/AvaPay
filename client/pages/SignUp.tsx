@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Wallet, ShieldCheck, Activity, ArrowRight, User, Building2, UserCog, Mail } from "lucide-react";
+import { Wallet, ShieldCheck, Activity, ArrowRight, User, Building2, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,7 +25,6 @@ export default function SignUp() {
   const roles = [
     { id: "employer", title: "Employer", icon: Building2, desc: "For companies managing payroll streams." },
     { id: "employee", title: "Employee", icon: User, desc: "For individuals receiving salaries." },
-    { id: "admin", title: "Protocol Admin", icon: UserCog, desc: "For infrastructure and DAO operators." },
   ];
 
   const handleConfirmRegistration = async () => {
@@ -156,7 +155,11 @@ export default function SignUp() {
               <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-500">
                 <div className="space-y-4">
                   <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-widest">
-                    {role === "employer" ? "Company Profile" : role === "employee" ? "Professional Profile" : "Admin Details"}
+                    {role === "employer"
+                      ? "Company Profile"
+                      : role === "employee"
+                        ? "Professional Profile"
+                        : "Profile"}
                   </h3>
 
                   {role === "employer" && (
@@ -200,18 +203,16 @@ export default function SignUp() {
                     </div>
                   )}
 
-                  {role === "admin" && (
-                    <div className="p-8 text-center space-y-4">
-                      <UserCog className="h-12 w-12 text-primary mx-auto opacity-50" />
-                      <p className="text-sm text-muted-foreground">Admin accounts have protocol-wide visibility and infrastructure management privileges.</p>
-                    </div>
-                  )}
                 </div>
 
                 <div className="flex gap-3">
                   <Button variant="ghost" onClick={() => setStep(1)} className="h-14 flex-1 rounded-2xl border-white/5 text-muted-foreground hover:text-white">Back</Button>
                   <Button
-                    disabled={role === "employer" ? !companyName : role === "employee" ? (!jobTitle || !salary) : false}
+                    disabled={role === "employer"
+                      ? !companyName
+                      : role === "employee"
+                        ? (!jobTitle || !salary)
+                        : true}
                     onClick={() => setStep(3)}
                     className="h-14 flex-[2] rounded-2xl bg-primary hover:bg-primary/90 text-lg font-black"
                   >

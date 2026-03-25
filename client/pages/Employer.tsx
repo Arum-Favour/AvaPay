@@ -4,7 +4,6 @@ import {
   Building2, 
   Download, 
   FileUp,
-  FileDown,
   Plus, 
   Wallet, 
   MoreVertical, 
@@ -154,17 +153,39 @@ function parseMonthlySalaryToUsdc6(raw: string): { ok: true; value: number } | {
   return { ok: true, value: Math.round(n * 1_000_000) };
 }
 
-const EMPLOYEE_CSV_TEMPLATE = `name,role,wallet,monthlySalary
-Jane Doe,Engineer,0x0000000000000000000000000000000000000001,2500.50
-John Smith,Designer,0x0000000000000000000000000000000000000002,3200
-`;
+function escapeCsvCell(value: string) {
+  const s = value ?? "";
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
 
-function downloadEmployeeCsvTemplate() {
-  const blob = new Blob([EMPLOYEE_CSV_TEMPLATE], { type: "text/csv;charset=utf-8" });
+function formatUsdc6ToCsv(usdc6: number): string {
+  // Convert micro-units (1e6) to a dot-decimal USDC string with 2 decimals, e.g. 2500.50
+  const whole = Math.floor(usdc6 / 1_000_000);
+  const frac2 = Math.floor((usdc6 - whole * 1_000_000) / 10_000); // 0..99
+  return `${whole}.${frac2.toString().padStart(2, "0")}`;
+}
+
+function downloadEmployeesCsv(
+  rows: Array<{ name: string; title?: string | null; wallet: string; monthlySalaryUsdc6: number }>,
+  filename = "avapay-employees.csv",
+) {
+  const header = ["name", "role", "wallet", "monthlySalary"].join(",");
+  const lines = rows.map((e) =>
+    [
+      escapeCsvCell(e.name),
+      escapeCsvCell(e.title ?? ""),
+      escapeCsvCell(e.wallet?.toLowerCase() ?? ""),
+      formatUsdc6ToCsv(e.monthlySalaryUsdc6),
+    ].join(","),
+  );
+
+  const csv = [header, ...lines].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "avapay-employees-template.csv";
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -465,6 +486,35 @@ export default function Employer() {
 
   const companyName = employerState.data?.company?.name || "Your Company";
   const employees = employerState.data?.employees ?? [];
+  const employeePageSize = 15;
+  const [employeeSearch, setEmployeeSearch] = React.useState("");
+  const [employeePage, setEmployeePage] = React.useState(0);
+
+  const filteredEmployees = React.useMemo(() => {
+    const q = employeeSearch.trim().toLowerCase();
+    if (!q) return employees;
+    return employees.filter((e) => {
+      const name = e.name?.toLowerCase() ?? "";
+      const title = e.title?.toLowerCase() ?? "";
+      const wallet = e.wallet?.toLowerCase() ?? "";
+      return name.includes(q) || title.includes(q) || wallet.includes(q);
+    });
+  }, [employees, employeeSearch]);
+
+  const employeePageCount = Math.ceil(filteredEmployees.length / employeePageSize);
+  React.useEffect(() => {
+    if (employeePageCount === 0) {
+      if (employeePage !== 0) setEmployeePage(0);
+      return;
+    }
+    if (employeePage > employeePageCount - 1) setEmployeePage(employeePageCount - 1);
+  }, [employeePageCount, employeePage]);
+
+  const paginatedEmployees = React.useMemo(() => {
+    const start = employeePage * employeePageSize;
+    return filteredEmployees.slice(start, start + employeePageSize);
+  }, [employeePage, employeePageSize, filteredEmployees]);
+
   const totalMonthly = employees.filter((e) => e.status === "active").reduce((acc, e) => acc + e.monthlySalaryUsdc6, 0);
   const draftPayrun = employerState.data?.payruns?.find((p) => p.status === "draft");
   const draftTotalUsdc6 = draftPayrun?.totalAmountUsdc6 ?? 0;
@@ -521,7 +571,7 @@ export default function Employer() {
     }
     if (nameIdx < 0 || roleIdx < 0 || walletIdx < 0 || salaryIdx < 0) {
       toast.error(
-        "CSV header must include columns: name, role, wallet, monthlySalary (see Download template)",
+        "CSV header must include columns: name, role, wallet, monthlySalary",
       );
       return;
     }
@@ -544,7 +594,7 @@ export default function Employer() {
         return;
       }
       const salaryParsed = parseMonthlySalaryToUsdc6(salaryRaw);
-      if (!salaryParsed.ok) {
+      if (salaryParsed.ok === false) {
         toast.error(`Row ${lineNo}: ${salaryParsed.reason}. Use a number like 2500 or 2500.50 (commas as thousands are OK).`);
         return;
       }
@@ -620,7 +670,11 @@ export default function Employer() {
               <p className="text-muted-foreground">Managing payroll infrastructure on Avalanche C-Chain.</p>
             </div>
             <div className="flex items-center gap-3">
-              <Button variant="outline" className="rounded-full border-white/10 bg-white/5 hover:bg-white/10">
+              <Button
+                variant="outline"
+                className="rounded-full border-white/10 bg-white/5 hover:bg-white/10"
+                onClick={() => downloadEmployeesCsv(filteredEmployees)}
+              >
                 <Download className="mr-2 h-4 w-4" />
                 Export CSV
               </Button>
@@ -637,14 +691,6 @@ export default function Employer() {
             />
             <Button
               type="button"
-              variant="outline"
-              className="rounded-full border-white/10 bg-white/5 hover:bg-white/10"
-              onClick={() => downloadEmployeeCsvTemplate()}
-            >
-              <FileDown className="mr-2 h-4 w-4" />
-              Download template
-            </Button>
-            <Button
               variant="outline"
               className="rounded-full border-white/10 bg-white/5 hover:bg-white/10"
               onClick={() => csvInputRef.current?.click()}
@@ -915,11 +961,17 @@ export default function Employer() {
               <Input 
                 placeholder="Search by name, role, or wallet..." 
                 className="pl-10 pr-4 py-2 w-full sm:w-[350px] rounded-full border-white/10 bg-white/5 focus-visible:ring-primary/50"
+                value={employeeSearch}
+                onChange={(e) => {
+                  setEmployeeSearch(e.target.value);
+                  setEmployeePage(0);
+                }}
               />
             </div>
           </div>
           
-          <div className="overflow-x-auto">
+          {/* Desktop table */}
+          <div className="hidden lg:block overflow-x-auto">
             <Table>
               <TableHeader className="bg-white/[0.02]">
                 <TableRow className="border-white/5 hover:bg-transparent">
@@ -932,28 +984,93 @@ export default function Employer() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {employees.map((employee) => (
-                  <TableRow key={employee.id} className="border-white/5 hover:bg-white/5 transition-all">
-                    <TableCell className="py-5 font-bold pl-8">
-                      <div className="flex items-center gap-3">
-                        <div className="h-8 w-8 rounded-full bg-gradient-to-br from-primary/40 to-accent/40 flex items-center justify-center text-[10px] text-white font-bold border border-white/10">
-                          {employee.name.split(' ').map(n => n[0]).join('')}
+                {paginatedEmployees.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="py-12 text-center text-muted-foreground">
+                      No employees match your search.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  paginatedEmployees.map((employee) => (
+                    <TableRow key={employee.id} className="border-white/5 hover:bg-white/5 transition-all">
+                      <TableCell className="py-5 font-bold pl-8">
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-full bg-gradient-to-br from-primary/40 to-accent/40 flex items-center justify-center text-[10px] text-white font-bold border border-white/10">
+                            {employee.name.split(" ").map((n) => n[0]).join("")}
+                          </div>
+                          {employee.name}
                         </div>
-                        {employee.name}
+                      </TableCell>
+                      <TableCell className="py-5 text-sm text-muted-foreground">{employee.title ?? "—"}</TableCell>
+                      <TableCell className="py-5 font-mono text-[10px] text-muted-foreground">{employee.wallet}</TableCell>
+                      <TableCell className="py-5 font-bold text-primary">${formatUsdc(employee.monthlySalaryUsdc6)}</TableCell>
+                      <TableCell className="py-5">
+                        <Badge
+                          className={cn(
+                            "rounded-full px-2 py-0.5 text-[10px]",
+                            employee.status === "active"
+                              ? "bg-emerald-500/10 text-emerald-500"
+                              : "bg-destructive/10 text-destructive",
+                          )}
+                        >
+                          {employee.status.toUpperCase()}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="py-5 text-right pr-8">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-white/10">
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="glass border-white/10">
+                            <DropdownMenuItem
+                              className="focus:bg-white/5 cursor-pointer"
+                              onClick={() => handleEditEmployee(employee)}
+                            >
+                              <Pencil className="mr-2 h-4 w-4" />
+                              Edit details
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-destructive focus:bg-destructive/10 cursor-pointer"
+                              onClick={() => handleDeleteEmployee(employee)}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete employee
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* Mobile cards */}
+          <div className="lg:hidden p-4 space-y-3">
+            {filteredEmployees.length === 0 ? (
+              <div className="py-10 text-center text-muted-foreground">
+                No employees match your search.
+              </div>
+            ) : (
+              paginatedEmployees.map((employee) => (
+                <div
+                  key={employee.id}
+                  className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="h-9 w-9 rounded-full bg-gradient-to-br from-primary/40 to-accent/40 flex items-center justify-center text-[10px] text-white font-bold border border-white/10">
+                        {employee.name.split(" ").map((n) => n[0]).join("")}
                       </div>
-                    </TableCell>
-                    <TableCell className="py-5 text-sm text-muted-foreground">{employee.title ?? "—"}</TableCell>
-                    <TableCell className="py-5 font-mono text-[10px] text-muted-foreground">{employee.wallet}</TableCell>
-                    <TableCell className="py-5 font-bold text-primary">${formatUsdc(employee.monthlySalaryUsdc6)}</TableCell>
-                    <TableCell className="py-5">
-                      <Badge className={cn(
-                        "rounded-full px-2 py-0.5 text-[10px]",
-                        employee.status === "active" ? "bg-emerald-500/10 text-emerald-500" : "bg-destructive/10 text-destructive"
-                      )}>
-                        {employee.status.toUpperCase()}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="py-5 text-right pr-8">
+                      <div>
+                        <p className="font-bold">{employee.name}</p>
+                        <p className="text-xs text-muted-foreground">{employee.title ?? "—"}</p>
+                      </div>
+                    </div>
+                    <div className="shrink-0">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-white/10">
@@ -977,19 +1094,64 @@ export default function Employer() {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Wallet</p>
+                      <p className="font-mono text-[10px] text-muted-foreground break-all">{employee.wallet}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Monthly Salary</p>
+                      <p className="font-bold text-primary">${formatUsdc(employee.monthlySalaryUsdc6)}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <Badge
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[10px]",
+                        employee.status === "active"
+                          ? "bg-emerald-500/10 text-emerald-500"
+                          : "bg-destructive/10 text-destructive",
+                      )}
+                    >
+                      {employee.status.toUpperCase()}
+                    </Badge>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
-          
+
+          {/* Pagination Footer */}
           <div className="p-4 border-t border-white/5 bg-white/[0.01] flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" className="rounded-full border-white/10 bg-transparent h-8">Previous</Button>
-              <Button variant="outline" size="sm" className="rounded-full border-white/10 bg-transparent h-8">Next</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full border-white/10 bg-transparent h-8"
+                onClick={() => setEmployeePage((p) => Math.max(0, p - 1))}
+                disabled={employeePage <= 0 || filteredEmployees.length === 0}
+              >
+                Previous
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full border-white/10 bg-transparent h-8"
+                onClick={() => setEmployeePage((p) => p + 1)}
+                disabled={employeePageCount === 0 || employeePage + 1 >= employeePageCount}
+              >
+                Next
+              </Button>
             </div>
-            <span className="text-xs text-muted-foreground">Showing {employees.length} employee(s)</span>
+            <span className="text-xs text-muted-foreground">
+              {filteredEmployees.length === 0
+                ? "Showing 0 employee(s)"
+                : `Showing ${employeePage * employeePageSize + 1}-${Math.min(filteredEmployees.length, (employeePage + 1) * employeePageSize)} of ${filteredEmployees.length} employee(s)`}
+            </span>
           </div>
         </div>
 

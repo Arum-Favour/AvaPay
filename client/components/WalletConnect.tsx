@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { Wallet, LogOut, ChevronDown, CheckCircle2 } from "lucide-react";
+import { Wallet, LogOut, ChevronDown, CheckCircle2, Copy } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +17,7 @@ import { useAccount, useBalance, useReadContracts } from "wagmi";
 import { avalancheFuji } from "wagmi/chains";
 import { formatUnits } from "viem";
 import { FUJI_USDC_ADDRESS } from "@shared/constants";
+import { toast } from "sonner";
 
 const erc20Abi = [
   {
@@ -56,6 +57,16 @@ export function WalletConnect() {
   const shortAddress = displayAddress 
     ? `${displayAddress.slice(0, 6)}...${displayAddress.slice(-4)}` 
     : "";
+
+  const handleCopyAddress = async () => {
+    if (!displayAddress) return;
+    try {
+      await navigator.clipboard.writeText(displayAddress);
+      toast.success("Address copied");
+    } catch {
+      toast.error("Could not copy address");
+    }
+  };
 
   const avaxBalance = useBalance({
     address: displayAddress as `0x${string}` | undefined,
@@ -118,6 +129,15 @@ export function WalletConnect() {
       <DropdownMenuContent align="end" className="w-56 glass border-white/10 mt-2">
         <DropdownMenuLabel className="text-xs text-muted-foreground">Institutional Wallet</DropdownMenuLabel>
         <DropdownMenuSeparator className="bg-white/5" />
+        <DropdownMenuItem
+          onSelect={() => {
+            void handleCopyAddress();
+          }}
+          className="focus:bg-white/5 cursor-pointer py-3"
+        >
+          <Copy className="mr-2 h-4 w-4" />
+          <span className="font-mono text-[10px] text-muted-foreground break-all">{displayAddress}</span>
+        </DropdownMenuItem>
         <DropdownMenuItem className="focus:bg-white/5 cursor-pointer py-3">
           <div className="flex flex-col">
             <span className="text-sm font-semibold">
