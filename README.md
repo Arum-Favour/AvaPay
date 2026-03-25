@@ -1,7 +1,9 @@
 ## AvaPay – Fuji Payroll Protocol
 
 AvaPay is a Web3 payroll protocol running on **Avalanche Fuji testnet**.  
-Employers deploy a **shared USDC payroll vault**, fund it from their own wallet, and execute **batch monthly payouts** to employees. Employees sign in with their wallet to see **real earnings history** and view the on-chain activity for their address.
+Employers deploy a **shared USDC payroll vault**, fund it from their own wallet, and execute **batch monthly payouts** to employees. Employees sign in with their wallet to see **real earnings history** and view the on-chain activity for their address
+
+Live Url: https://avapay.onrender.com
 
 ### What the app does
 
